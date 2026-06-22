@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import librosa
+# librosa тянет numba (JIT-компиляция при импорте — медленно на слабом CPU,
+# особенно на Render free tier). Импортируем лениво внутри функции, чтобы
+# веб-сервер стартовал мгновенно и не падал по health-check таймауту.
 
 
 @dataclass
@@ -41,6 +43,8 @@ def detect_energy_spans(
     merge_gap_sec: float = 1.0,
     z_threshold: float = 1.3,
 ) -> list[EnergySpan]:
+    import librosa
+
     y, sr = librosa.load(str(wav_path), sr=16000, mono=True)
     if len(y) == 0:
         return []
