@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reels Maker Agent</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="header-logo">🎬 Reels Maker Agent</div>
+</header>
+
+<main id="app">
+  <section id="upload-section" class="card">
+    <h2>Загрузите видео</h2>
+    <p class="hint">Подкаст, стрим, вебинар — агент найдёт яркие моменты и подготовит вертикальные клипы.</p>
+    <input type="file" id="file-input" accept="video/*">
+    <button id="upload-btn" disabled>Загрузить и проанализировать</button>
+  </section>
+
+  <section id="progress-section" class="card hidden">
+    <h2>Прогресс</h2>
+    <div id="progress-feed"></div>
+  </section>
+
+  <section id="candidates-section" class="card hidden">
+    <h2>Кандидаты на клипы</h2>
+    <div id="candidates-list"></div>
+    <div class="manual-form">
+      <h3>Добавить вручную</h3>
+      <div class="manual-inputs">
+        <input type="number" id="manual-start" placeholder="начало, сек" min="0" step="1">
+        <input type="number" id="manual-end" placeholder="конец, сек" min="0" step="1">
+        <button id="manual-add-btn">Добавить</button>
+      </div>
+    </div>
+    <button id="render-btn" style="margin-top:18px">Отрендерить одобренные клипы</button>
+  </section>
+
+  <section id="results-section" class="card hidden">
+    <h2>Готовые клипы</h2>
+    <div id="results-list"></div>
+    <button id="download-all-btn" style="margin-top:12px">Скачать все (zip)</button>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

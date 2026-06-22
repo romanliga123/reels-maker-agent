@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: reels-maker-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
+    envVars:
+      # Секретный ключ задайте вручную в Render Dashboard после первого деплоя:
+      # GROQ_API_KEY
+      - key: GROQ_API_KEY
+        sync: false
