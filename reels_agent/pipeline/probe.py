@@ -20,7 +20,8 @@ class ProbeError(Exception):
     pass
 
 
-def probe_video(path: Path) -> ProbeResult:
+def probe_video(path: str | Path) -> ProbeResult:
+    """path может быть локальным путём или presigned URL (ffprobe сикает по HTTP Range)."""
     cmd = [
         config.FFPROBE_BIN, "-v", "error",
         "-print_format", "json",

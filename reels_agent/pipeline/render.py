@@ -30,7 +30,7 @@ def _escape_filter_path(path: Path) -> str:
 
 
 def render_clip(
-    source_path: Path,
+    source_path: str | Path,
     candidate: ClipCandidate,
     transcript: list[TranscriptSegment],
     crop: CropPlan,

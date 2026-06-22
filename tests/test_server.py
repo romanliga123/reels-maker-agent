@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from web.server import app, _get_or_create_session
 from reels_agent.job_loop import JobLoop
 from reels_agent.models import ClipCandidate, RenderResult
+from reels_agent import config, storage
 
 
 @pytest.fixture
@@ -160,6 +161,78 @@ class TestRenderEndpoints:
         names = sorted(zf.namelist())
         assert names == ["c1.mp4", "c2.mp4"]
         assert zf.read("c1.mp4") == b"clip one"
+
+
+class TestConfigEndpoint:
+    def test_reports_r2_disabled_by_default(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", False)
+        resp = client.get("/api/config")
+        assert resp.status_code == 200
+        assert resp.json() == {"r2_enabled": False}
+
+    def test_reports_r2_enabled_when_configured(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", True)
+        resp = client.get("/api/config")
+        assert resp.json() == {"r2_enabled": True}
+
+
+class TestPresignedUploadFlow:
+    def test_upload_url_503_when_r2_disabled(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", False)
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        assert resp.status_code == 503
+
+    def test_upload_url_rejects_bad_extension(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", True)
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "doc.txt"})
+        assert resp.status_code == 400
+
+    def test_upload_url_returns_put_url_and_stores_key(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", True)
+        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.r2/{key}?sig=abc")
+
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["key"] == f"{sid}/source.mp4"
+        assert body["upload_url"] == f"https://fake.r2/{sid}/source.mp4?sig=abc"
+
+        job = _get_or_create_session(sid)["job"]
+        assert job.storage_key == f"{sid}/source.mp4"
+
+    def test_upload_url_storage_error_returns_502(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", True)
+
+        def boom(key, **kw):
+            raise storage.StorageError("боком")
+
+        monkeypatch.setattr(storage, "presigned_put_url", boom)
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        assert resp.status_code == 502
+
+    def test_upload_complete_without_prior_upload_url_400(self, client):
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-complete")
+        assert resp.status_code == 400
+
+    def test_upload_complete_triggers_analysis(self, client, monkeypatch):
+        monkeypatch.setattr(config, "R2_ENABLED", True)
+        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.r2/{key}")
+        monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.r2/{key}?get=1")
+
+        started_with = []
+        monkeypatch.setattr(JobLoop, "start_analysis", lambda self, path: started_with.append(path))
+
+        sid = new_session_id()
+        client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        resp = client.post(f"/api/{sid}/upload-complete")
+
+        assert resp.status_code == 200
+        assert started_with == [f"https://fake.r2/{sid}/source.mp4?get=1"]
 
 
 class TestWebsocket:

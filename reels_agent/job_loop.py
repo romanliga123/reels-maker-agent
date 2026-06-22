@@ -25,7 +25,8 @@ class JobLoop:
         self.session_id = session_id
         self.on_event = lambda text, kind: None  # переопределяется сервером
 
-        self.source_path: Path | None = None
+        self.source_path: str | Path | None = None  # локальный путь или presigned URL (R2)
+        self.storage_key: str | None = None  # ключ объекта в R2, для очистки после сессии
         self.probe: ProbeResult | None = None
         self.transcript: list[TranscriptSegment] = []
         self.energy_spans: list[EnergySpan] = []
@@ -53,8 +54,12 @@ class JobLoop:
         t.start()
         return t
 
-    def start_analysis(self, source_path: Path):
-        """Запускает стадии 2–7 (probe → транскрипция → анализ → кандидаты) в фоне."""
+    def start_analysis(self, source_path: str | Path):
+        """Запускает стадии 2–7 (probe → транскрипция → анализ → кандидаты) в фоне.
+
+        source_path — локальный путь (старый flow) либо presigned GET URL на R2
+        (новый flow для больших файлов — ffmpeg/ffprobe/cv2 сикают по HTTP Range).
+        """
         self.source_path = source_path
         self.status = "analyzing"
         self._spawn(self._run_analysis_pipeline)

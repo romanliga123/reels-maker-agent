@@ -22,7 +22,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from reels_agent.job_loop import JobLoop
-from reels_agent import config
+from reels_agent import config, storage
 
 app = FastAPI(title="Reels Maker Agent")
 
@@ -57,12 +57,18 @@ async def create_session():
     return {"session_id": session_id}
 
 
+@app.get("/api/config")
+async def get_config():
+    """Фронтенд решает, каким способом грузить файл: напрямую в R2 (большие файлы,
+    нет лимита Render-прокси) или старым способом через сервер (если R2 не настроен)."""
+    return {"r2_enabled": config.R2_ENABLED}
+
+
 @app.post("/api/{session_id}/upload")
 async def upload_file(session_id: str, file: UploadFile = File(...)):
     sess = _get_or_create_session(session_id)
     suffix = Path(file.filename).suffix.lower()
-    allowed = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
-    if suffix not in allowed:
+    if suffix not in ALLOWED_VIDEO_SUFFIXES:
         raise HTTPException(status_code=400, detail=f"Тип файла не поддерживается: {suffix}")
 
     dest_dir = config.UPLOADS_DIR / session_id
@@ -76,6 +82,48 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
     job: JobLoop = sess["job"]
     job.start_analysis(dest_path)
     return {"ok": True, "filename": file.filename}
+
+
+ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+
+
+@app.post("/api/{session_id}/upload-url")
+async def get_upload_url(session_id: str, body: dict):
+    """Возвращает presigned PUT URL — браузер льёт файл напрямую в R2, минуя сервер."""
+    if not config.R2_ENABLED:
+        raise HTTPException(status_code=503, detail="R2 не настроен на сервере")
+
+    filename = str(body.get("filename", "source.mp4"))
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_VIDEO_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"Тип файла не поддерживается: {suffix}")
+
+    sess = _get_or_create_session(session_id)
+    key = f"{session_id}/source{suffix}"
+    sess["job"].storage_key = key
+
+    try:
+        put_url = storage.presigned_put_url(key)
+    except storage.StorageError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"upload_url": put_url, "key": key}
+
+
+@app.post("/api/{session_id}/upload-complete")
+async def upload_complete(session_id: str):
+    """Браузер сообщает, что файл уже долетел до R2 — запускаем анализ по presigned GET URL."""
+    sess = _get_or_create_session(session_id)
+    job: JobLoop = sess["job"]
+    if not job.storage_key:
+        raise HTTPException(status_code=400, detail="upload-url не был запрошен для этой сессии")
+
+    try:
+        get_url = storage.presigned_get_url(job.storage_key, expires_in=config.SESSION_TTL_SEC + 3600)
+    except storage.StorageError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    job.start_analysis(get_url)
+    return {"ok": True}
 
 
 @app.get("/api/{session_id}/candidates")
@@ -224,12 +272,17 @@ async def _cleanup_task():
         await asyncio.sleep(3600)
         cutoff = time.time() - config.SESSION_TTL_SEC
         with _sessions_lock:
-            old = [sid for sid, s in _sessions.items() if s["created"] < cutoff]
-            for sid in old:
+            old = [(sid, s["job"]) for sid, s in _sessions.items() if s["created"] < cutoff]
+            for sid, _ in old:
                 del _sessions[sid]
-        for sid in old:
+        for sid, job in old:
             for base in (config.UPLOADS_DIR, config.WORK_DIR, config.OUTPUT_DIR):
                 shutil.rmtree(base / sid, ignore_errors=True)
+            if job.storage_key and config.R2_ENABLED:
+                try:
+                    storage.delete_object(job.storage_key)
+                except storage.StorageError:
+                    pass
 
 
 @app.on_event("startup")

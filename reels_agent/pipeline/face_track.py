@@ -24,7 +24,7 @@ class CropPlan:
 
 
 def compute_crop_plan(
-    video_path: Path,
+    video_path: str | Path,
     start: float,
     end: float,
     src_width: int,

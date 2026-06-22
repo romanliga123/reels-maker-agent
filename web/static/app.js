@@ -1,5 +1,15 @@
 let sessionId = null;
 let ws = null;
+let r2Enabled = false;
+let configLoaded = (async () => {
+  try {
+    const resp = await fetch("/api/config");
+    const data = await resp.json();
+    r2Enabled = !!data.r2_enabled;
+  } catch (e) {
+    r2Enabled = false;
+  }
+})();
 
 const fileInput = document.getElementById("file-input");
 const uploadBtn = document.getElementById("upload-btn");
@@ -57,7 +67,20 @@ uploadBtn.addEventListener("click", async () => {
   if (!file) return;
   uploadBtn.disabled = true;
   await ensureSession();
+  await configLoaded;
 
+  try {
+    if (r2Enabled) {
+      await uploadViaR2(file);
+    } else {
+      await uploadDirect(file);
+    }
+  } catch (e) {
+    uploadBtn.disabled = false;
+  }
+});
+
+async function uploadDirect(file) {
   const formData = new FormData();
   formData.append("file", file);
 
@@ -75,7 +98,81 @@ uploadBtn.addEventListener("click", async () => {
     appendProgress(`❌ ${e}`, "error");
     uploadBtn.disabled = false;
   }
-});
+}
+
+async function uploadViaR2(file) {
+  appendProgress("⬆️ Получаю ссылку для загрузки…", "progress");
+  let uploadUrl;
+  try {
+    const urlResp = await fetch(`/api/${sessionId}/upload-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name }),
+    });
+    if (!urlResp.ok) {
+      const err = await urlResp.json();
+      appendProgress(`❌ ${err.detail || "Ошибка получения ссылки на загрузку"}`, "error");
+      uploadBtn.disabled = false;
+      return;
+    }
+    ({ upload_url: uploadUrl } = await urlResp.json());
+  } catch (e) {
+    appendProgress(`❌ ${e}`, "error");
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  appendProgress(`⬆️ Загружаю ${file.name} напрямую в хранилище…`, "progress");
+  try {
+    await putFileWithProgress(uploadUrl, file);
+  } catch (e) {
+    appendProgress(`❌ Загрузка не удалась: ${e.message || e}`, "error");
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  appendProgress("✅ Файл загружен, начинаю анализ…", "progress");
+  try {
+    const completeResp = await fetch(`/api/${sessionId}/upload-complete`, { method: "POST" });
+    if (!completeResp.ok) {
+      const err = await completeResp.json();
+      appendProgress(`❌ ${err.detail || "Ошибка завершения загрузки"}`, "error");
+      uploadBtn.disabled = false;
+    }
+  } catch (e) {
+    appendProgress(`❌ ${e}`, "error");
+    uploadBtn.disabled = false;
+  }
+}
+
+function putFileWithProgress(url, file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        updateUploadProgressLine(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("ошибка сети"));
+    xhr.send(file);
+  });
+}
+
+function updateUploadProgressLine(pct) {
+  progressSection.classList.remove("hidden");
+  let line = document.getElementById("upload-progress-line");
+  if (!line) {
+    line = document.createElement("div");
+    line.id = "upload-progress-line";
+    progressFeed.appendChild(line);
+  }
+  line.textContent = `⬆️ Загрузка: ${pct}%`;
+}
 
 function fmtTime(sec) {
   const m = Math.floor(sec / 60);

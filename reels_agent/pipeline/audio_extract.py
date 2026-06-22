@@ -9,7 +9,8 @@ class AudioExtractError(Exception):
     pass
 
 
-def extract_audio(video_path: Path, out_wav_path: Path) -> Path:
+def extract_audio(video_path: str | Path, out_wav_path: Path) -> Path:
+    """video_path может быть локальным путём или presigned URL."""
     out_wav_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         config.FFMPEG_BIN, "-y", "-i", str(video_path),
