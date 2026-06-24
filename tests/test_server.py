@@ -64,6 +64,37 @@ class TestCandidatesEndpoints:
         assert body["candidates"] == []
         assert body["status"] == "idle"
 
+
+class TestPreviewEndpoint:
+    def test_no_source_yet_returns_404(self, client):
+        sid = new_session_id()
+        resp = client.get(f"/api/{sid}/preview")
+        assert resp.status_code == 404
+
+    def test_s3_mode_redirects_to_presigned_get_url(self, client, monkeypatch):
+        monkeypatch.setattr(config, "S3_ENABLED", True)
+        sid = new_session_id()
+        job = _get_or_create_session(sid)["job"]
+        job.storage_key = f"{sid}/source.mp4"
+        monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.s3/{key}?get=1")
+
+        resp = client.get(f"/api/{sid}/preview", follow_redirects=False)
+        assert resp.status_code in (302, 307)
+        assert resp.headers["location"] == f"https://fake.s3/{sid}/source.mp4?get=1"
+
+    def test_local_mode_serves_file(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "S3_ENABLED", False)
+        video = tmp_path / "source.mp4"
+        video.write_bytes(b"fake mp4 bytes")
+
+        sid = new_session_id()
+        job = _get_or_create_session(sid)["job"]
+        job.source_path = video
+
+        resp = client.get(f"/api/{sid}/preview")
+        assert resp.status_code == 200
+        assert resp.content == b"fake mp4 bytes"
+
     def test_manual_add_missing_fields_returns_400(self, client):
         sid = new_session_id()
         resp = client.post(f"/api/{sid}/candidates/manual", json={"start": 5})

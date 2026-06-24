@@ -17,7 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, RedirectResponse
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -172,6 +172,26 @@ async def list_candidates(session_id: str):
         "error": job.error,
         "candidates": [dataclasses.asdict(c) for c in job.candidates],
     }
+
+
+@app.get("/api/{session_id}/preview")
+async def preview_video(session_id: str):
+    """Отдаёт исходное видео для предпросмотра кандидата (без рендера) — браузер
+    сикает по таймкоду через media fragment (#t=start,end) в <video>/при навигации."""
+    sess = _get_or_create_session(session_id)
+    job: JobLoop = sess["job"]
+
+    if config.S3_ENABLED and job.storage_key:
+        try:
+            url = storage.presigned_get_url(job.storage_key, expires_in=3600)
+        except storage.StorageError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return RedirectResponse(url)
+
+    if isinstance(job.source_path, Path) and job.source_path.exists():
+        return FileResponse(job.source_path)
+
+    raise HTTPException(status_code=404, detail="Видео не найдено — анализ ещё не запускался?")
 
 
 @app.post("/api/{session_id}/candidates/manual")

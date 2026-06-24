@@ -284,6 +284,7 @@ function renderCandidateCard(c) {
       <label><input type="radio" name="sub-${c.id}" class="sub-dynamic" ${c.subtitle_style === "dynamic" ? "checked" : ""}> Караоке</label>
       <label><input type="radio" name="sub-${c.id}" class="sub-static" ${c.subtitle_style === "static" ? "checked" : ""}> Статичные</label>
       <span class="hint">${fmtTime(c.start)}–${fmtTime(c.end)}</span>
+      <a class="preview-link" href="/api/${sessionId}/preview#t=${c.start},${c.end}" target="_blank" rel="noopener">▶ Просмотр</a>
     </div>
   `;
 
