@@ -1,14 +1,20 @@
-"""Эвристика "пик смеха / эмоций" по аудио: RMS-энергия + zero-crossing-rate
-+ нестабильность высоты тона, z-нормированные относительно самого файла
-(своя база сравнения для каждой записи, а не глобальный порог).
+"""Эвристика "пик смеха / эмоций" по аудио: RMS-энергия + zero-crossing-rate,
+z-нормированные относительно самого файла (своя база сравнения для каждой
+записи, а не глобальный порог).
 
 Это не ML-классификатор смеха — это эвристика для v1: бурст громкости +
-высокая ZCR (шум/хрипота смеха) + скачущий pitch часто сопровождают смех и
-эмоциональные пики речи. Достаточно для ранжирования кандидатов в клипы,
-не для точной классификации "это именно смех".
+высокая ZCR (шум/хрипота смеха) часто сопровождают смех и эмоциональные пики
+речи. Достаточно для ранжирования кандидатов в клипы, не для точной
+классификации "это именно смех".
+
+Раньше сюда же добавлялась нестабильность высоты тона через librosa.yin, но
+yin использует numba (@stencil/@guvectorize) — JIT-компиляция при первом
+вызове в процессе разово съедает много памяти и роняла Render free tier
+(512MB) по OOM именно на этом шаге. RMS/ZCR — чистый numpy, без JIT.
 """
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 # librosa тянет numba (JIT-компиляция при импорте — медленно на слабом CPU,
@@ -43,24 +49,24 @@ def detect_energy_spans(
     merge_gap_sec: float = 1.0,
     z_threshold: float = 1.3,
     chunk_sec: float = 180.0,
+    on_progress: Callable[[float], None] | None = None,
 ) -> list[EnergySpan]:
     import librosa
 
     sr = 16000
     frame_length = int(sr * 0.05)   # 50ms
     hop_length = int(sr * 0.025)    # 25ms
-    yin_frame_length = frame_length * 2
 
     total_duration = librosa.get_duration(path=str(wav_path))
     if total_duration <= 0:
         return []
 
-    # librosa.yin/rms/zcr framируют сигнал целиком в память (frame_length x n_frames) —
-    # на часовом аудио это легко уходит за гигабайт и роняет процесс по OOM на free-тире
-    # Render (512MB). Читаем и считаем фичи по чанкам (librosa.load с offset/duration не
-    # грузит файл целиком), склеивая только лёгкие 1-D результаты — поведение алгоритма
-    # (z-score по всему файлу, сглаживание, склейка всплесков) не меняется.
-    rms_parts, zcr_parts, f0_parts, time_parts = [], [], [], []
+    # rms/zcr framируют сигнал в память (frame_length x n_frames) — на длинном аудио
+    # это растёт пропорционально длительности. Читаем и считаем фичи по чанкам
+    # (librosa.load с offset/duration не грузит файл целиком), склеивая только лёгкие
+    # 1-D результаты — поведение алгоритма (z-score по всему файлу, сглаживание,
+    # склейка всплесков) не меняется.
+    rms_parts, zcr_parts, time_parts = [], [], []
     offset = 0.0
     while offset < total_duration:
         y, _ = librosa.load(str(wav_path), sr=sr, mono=True, offset=offset, duration=chunk_sec)
@@ -68,28 +74,24 @@ def detect_energy_spans(
             break
         rms_chunk = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length, center=False)[0]
         zcr_chunk = librosa.feature.zero_crossing_rate(y=y, frame_length=frame_length, hop_length=hop_length, center=False)[0]
-        f0_chunk = librosa.yin(y, fmin=80, fmax=500, sr=sr, frame_length=yin_frame_length, hop_length=hop_length, center=False)
-        n_chunk = min(len(rms_chunk), len(zcr_chunk), len(f0_chunk))
+        n_chunk = min(len(rms_chunk), len(zcr_chunk))
         if n_chunk > 0:
             rms_parts.append(rms_chunk[:n_chunk])
             zcr_parts.append(zcr_chunk[:n_chunk])
-            f0_parts.append(f0_chunk[:n_chunk])
             time_parts.append(offset + librosa.frames_to_time(np.arange(n_chunk), sr=sr, hop_length=hop_length))
         offset += len(y) / sr  # реальная длина чанка (последний может быть короче chunk_sec)
+        if on_progress:
+            on_progress(min(1.0, offset / total_duration))
 
     if not rms_parts:
         return []
 
     rms = np.concatenate(rms_parts)
     zcr = np.concatenate(zcr_parts)
-    f0 = np.concatenate(f0_parts)
     times = np.concatenate(time_parts)
     n = len(rms)
 
-    pitch_var = np.abs(np.diff(f0, prepend=f0[0]))
-    pitch_var = np.nan_to_num(pitch_var, nan=0.0, posinf=0.0, neginf=0.0)
-
-    composite = 0.4 * _zscore(rms) + 0.3 * _zscore(zcr) + 0.3 * _zscore(pitch_var)
+    composite = 0.55 * _zscore(rms) + 0.45 * _zscore(zcr)
 
     smooth_window = max(1, int(0.4 / (hop_length / sr)))  # ~0.4s
     composite = _smooth(composite, smooth_window)
