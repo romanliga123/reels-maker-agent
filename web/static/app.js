@@ -20,6 +20,7 @@ const candidatesList = document.getElementById("candidates-list");
 const manualStart = document.getElementById("manual-start");
 const manualEnd = document.getElementById("manual-end");
 const manualAddBtn = document.getElementById("manual-add-btn");
+const selectAllBtn = document.getElementById("select-all-btn");
 const renderBtn = document.getElementById("render-btn");
 const resultsSection = document.getElementById("results-section");
 const resultsList = document.getElementById("results-list");
@@ -331,6 +332,23 @@ manualAddBtn.addEventListener("click", async () => {
   manualStart.value = "";
   manualEnd.value = "";
   loadCandidates();
+});
+
+selectAllBtn.addEventListener("click", async () => {
+  const cards = candidatesList.querySelectorAll(".candidate-card");
+  selectAllBtn.disabled = true;
+  await Promise.all(Array.from(cards).map(async (card) => {
+    const cb = card.querySelector(".approve-cb");
+    if (cb.checked) return;
+    cb.checked = true;
+    card.classList.add("approved");
+    await fetch(`/api/${sessionId}/candidates/${card.dataset.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: true }),
+    });
+  }));
+  selectAllBtn.disabled = false;
 });
 
 renderBtn.addEventListener("click", async () => {

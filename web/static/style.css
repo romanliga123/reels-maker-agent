@@ -57,6 +57,8 @@ button {
 }
 button:disabled { background: #2d2b55; color: #64748b; cursor: not-allowed; }
 button:not(:disabled):hover { background: #7c3aed; }
+button.secondary { background: #2d2b55; margin-bottom: 12px; }
+button.secondary:not(:disabled):hover { background: #3d3a6e; }
 
 #progress-feed {
   display: flex;
