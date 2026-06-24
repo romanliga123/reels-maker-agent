@@ -95,6 +95,8 @@ class TestPreviewEndpoint:
         assert resp.status_code == 200
         assert resp.content == b"fake mp4 bytes"
 
+
+class TestManualCandidates:
     def test_manual_add_missing_fields_returns_400(self, client):
         sid = new_session_id()
         resp = client.post(f"/api/{sid}/candidates/manual", json={"start": 5})
@@ -142,6 +144,14 @@ class TestRenderEndpoints:
         resp = client.post(f"/api/{sid}/render")
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+
+    def test_render_cancel_returns_ok_and_sets_flag(self, client):
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/render/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        job = _get_or_create_session(sid)["job"]
+        assert job._cancel_render.is_set()
 
     def test_render_status_shape(self, client):
         sid = new_session_id()
@@ -250,7 +260,7 @@ class TestPresignedUploadFlow:
         monkeypatch.setattr(config, "S3_ENABLED", True)
         monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
         monkeypatch.setattr(config, "S3_MULTIPART_PART_SIZE_BYTES", 40)
-        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key, **kw: "upload-123")
         monkeypatch.setattr(
             storage, "presigned_upload_part_url",
             lambda key, upload_id, part_number, expires_in: f"https://fake.s3/{key}?part={part_number}",
@@ -291,7 +301,7 @@ class TestPresignedUploadFlow:
     def test_upload_complete_multipart_without_parts_400(self, client, monkeypatch):
         monkeypatch.setattr(config, "S3_ENABLED", True)
         monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
-        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key, **kw: "upload-123")
         monkeypatch.setattr(storage, "presigned_upload_part_url", lambda *a, **kw: "https://fake.s3/part")
 
         sid = new_session_id()
@@ -302,7 +312,7 @@ class TestPresignedUploadFlow:
     def test_upload_complete_multipart_completes_and_starts_analysis(self, client, monkeypatch):
         monkeypatch.setattr(config, "S3_ENABLED", True)
         monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
-        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key, **kw: "upload-123")
         monkeypatch.setattr(storage, "presigned_upload_part_url", lambda *a, **kw: "https://fake.s3/part")
         monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.s3/{key}?get=1")
 

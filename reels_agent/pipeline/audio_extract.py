@@ -27,7 +27,11 @@ def extract_audio(
         "-progress", "pipe:1", "-nostats",
         "-f", "wav", str(out_wav_path),
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # stderr=STDOUT (не отдельный PIPE) — иначе при достаточно "болтливом" stderr пайп
+    # переполняется, а мы блокируемся на чтении stdout: classic subprocess deadlock
+    # (поймано на render_clip с ass-фильтром, тут — для единообразия и на будущее).
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    output_lines: list[str] = []
     try:
         if proc.stdout is not None:
             for line in proc.stdout:
@@ -35,11 +39,12 @@ def extract_audio(
                     # ffmpeg называет это "ms", но значение на самом деле в микросекундах.
                     out_time_sec = int(line.strip().split("=", 1)[1]) / 1_000_000
                     on_progress(min(1.0, out_time_sec / total_duration_sec))
-        stderr = proc.stderr.read() if proc.stderr else ""
+                else:
+                    output_lines.append(line)
         proc.wait(timeout=600)
     except subprocess.TimeoutExpired:
         proc.kill()
         raise AudioExtractError("ffmpeg не успел извлечь аудио за 10 минут")
     if proc.returncode != 0:
-        raise AudioExtractError(f"ffmpeg не смог извлечь аудио: {stderr.strip()[:300]}")
+        raise AudioExtractError(f"ffmpeg не смог извлечь аудио: {''.join(output_lines).strip()[:300]}")
     return out_wav_path

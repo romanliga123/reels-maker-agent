@@ -22,6 +22,7 @@ const manualEnd = document.getElementById("manual-end");
 const manualAddBtn = document.getElementById("manual-add-btn");
 const selectAllBtn = document.getElementById("select-all-btn");
 const renderBtn = document.getElementById("render-btn");
+const cancelRenderBtn = document.getElementById("cancel-render-btn");
 const resultsSection = document.getElementById("results-section");
 const resultsList = document.getElementById("results-list");
 const downloadAllBtn = document.getElementById("download-all-btn");
@@ -157,7 +158,7 @@ async function uploadViaS3(file) {
     if (data.mode === "multipart") {
       completeBody = { parts: await uploadMultipart(file, data) };
     } else {
-      await putFileWithProgress(data.upload_url, file);
+      await putFileWithProgress(data.upload_url, file, data.content_type);
     }
   } catch (e) {
     appendProgress(`❌ Загрузка не удалась: ${e.message || e}`, "error");
@@ -217,10 +218,15 @@ function putPartWithProgress(url, blob, onProgress) {
   });
 }
 
-function putFileWithProgress(url, file) {
+function putFileWithProgress(url, file, contentType) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
+    // Должен совпасть с Content-Type, под который подписан presigned URL — иначе
+    // S3 отвергнет запрос (подпись включает этот заголовок, если он был передан
+    // при генерации ссылки). Без правильного типа браузер потом не проигрывает
+    // видео по прямой ссылке, а скачивает его как application/octet-stream.
+    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         updateUploadProgressLine(Math.round((e.loaded / e.total) * 100));
@@ -361,6 +367,13 @@ renderBtn.addEventListener("click", async () => {
     return;
   }
   appendProgress("🎬 Рендер запущен…", "progress");
+  cancelRenderBtn.classList.remove("hidden");
+  cancelRenderBtn.disabled = false;
+});
+
+cancelRenderBtn.addEventListener("click", async () => {
+  cancelRenderBtn.disabled = true;
+  await fetch(`/api/${sessionId}/render/cancel`, { method: "POST" });
 });
 
 async function loadResults() {
@@ -368,6 +381,7 @@ async function loadResults() {
   const data = await resp.json();
   renderResults(data.results || {});
   renderBtn.disabled = false;
+  cancelRenderBtn.classList.add("hidden");
 }
 
 function renderResults(results) {

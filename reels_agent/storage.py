@@ -32,14 +32,18 @@ def _client():
     )
 
 
-def presigned_put_url(key: str, expires_in: int = 3600) -> str:
-    """URL, в который браузер сам PUT'ит файл напрямую в хранилище."""
+def presigned_put_url(key: str, expires_in: int = 3600, content_type: str | None = None) -> str:
+    """URL, в который браузер сам PUT'ит файл напрямую в хранилище.
+
+    content_type попадает в подписанные параметры — без него S3 сохраняет объект
+    как application/octet-stream, и браузер при прямом открытии видео скачивает
+    файл вместо проигрывания. Если передан, браузер должен прислать ТОЧНО такой
+    же заголовок Content-Type на сам PUT, иначе подпись не совпадёт."""
     try:
-        return _client().generate_presigned_url(
-            "put_object",
-            Params={"Bucket": config.S3_BUCKET_NAME, "Key": key},
-            ExpiresIn=expires_in,
-        )
+        params = {"Bucket": config.S3_BUCKET_NAME, "Key": key}
+        if content_type:
+            params["ContentType"] = content_type
+        return _client().generate_presigned_url("put_object", Params=params, ExpiresIn=expires_in)
     except StorageError:
         raise
     except Exception as e:
@@ -65,10 +69,17 @@ def delete_object(key: str):
     _client().delete_object(Bucket=config.S3_BUCKET_NAME, Key=key)
 
 
-def create_multipart_upload(key: str) -> str:
-    """Открывает multipart-загрузку для файлов крупнее лимита одного PUT (5 ГБ у S3). Возвращает UploadId."""
+def create_multipart_upload(key: str, content_type: str | None = None) -> str:
+    """Открывает multipart-загрузку для файлов крупнее лимита одного PUT (5 ГБ у S3). Возвращает UploadId.
+
+    В отличие от presigned_put_url, здесь content_type не требует совпадающего
+    заголовка на каждой части — он фиксируется один раз для всего объекта при
+    открытии загрузки, отдельные UploadPart ничего про него не знают."""
     try:
-        resp = _client().create_multipart_upload(Bucket=config.S3_BUCKET_NAME, Key=key)
+        kwargs = {"Bucket": config.S3_BUCKET_NAME, "Key": key}
+        if content_type:
+            kwargs["ContentType"] = content_type
+        resp = _client().create_multipart_upload(**kwargs)
         return resp["UploadId"]
     except StorageError:
         raise

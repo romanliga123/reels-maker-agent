@@ -175,7 +175,7 @@ class TestRunRenderPipeline:
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
         monkeypatch.setattr(
             "reels_agent.job_loop.render_clip",
-            lambda src, candidate, transcript, crop, work_dir, out_path: RenderResult(
+            lambda src, candidate, transcript, crop, work_dir, out_path, **kw: RenderResult(
                 clip_id=candidate.id, output_path=str(out_path), duration=candidate.end - candidate.start,
             ),
         )
@@ -200,7 +200,7 @@ class TestRunRenderPipeline:
         monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
 
-        def fake_render_clip(src, candidate, transcript, crop, work_dir, out_path):
+        def fake_render_clip(src, candidate, transcript, crop, work_dir, out_path, **kw):
             if candidate.id == "bad":
                 return RenderResult(clip_id=candidate.id, output_path="", duration=0.0, error="ffmpeg сломался")
             return RenderResult(clip_id=candidate.id, output_path=str(out_path), duration=10.0)
@@ -223,6 +223,55 @@ class TestRunRenderPipeline:
         error_events = [e for e in events if e[0] == "error"]
         assert len(error_events) == 1
         assert "1/2" in events[-1][1]  # итоговое сообщение: 1 из 2 готов
+
+    def test_cancel_before_loop_stops_immediately(self, monkeypatch, fake_transcript):
+        monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
+                            lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+        calls = []
+        monkeypatch.setattr(
+            "reels_agent.job_loop.render_clip",
+            lambda src, candidate, transcript, crop, work_dir, out_path, **kw: calls.append(candidate.id),
+        )
+
+        events = []
+        job = make_job(events)
+        job.transcript = fake_transcript
+        job.probe = ProbeResult(duration=30.0, width=1280, height=720, fps=24, has_audio=True)
+        job.cancel_render()  # отмена до старта цикла рендера
+        approved = [
+            ClipCandidate(id="c1", start=0, end=15, reason="r", score=1.0, source="llm", approved=True),
+        ]
+        job._run_render_pipeline(approved)
+
+        assert calls == []  # ни один клип не должен начать рендериться
+        assert job.status == "cancelled"
+        assert events[-1][0] == "render_done"
+        assert "0/1" in events[-1][1]
+
+    def test_cancel_between_clips_keeps_already_rendered(self, monkeypatch, fake_transcript):
+        monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
+                            lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+
+        events = []
+        job = make_job(events)
+
+        def fake_render_clip(src, candidate, transcript, crop, work_dir, out_path, **kw):
+            job.cancel_render()  # отмена приходит "во время" первого клипа
+            return RenderResult(clip_id=candidate.id, output_path=str(out_path), duration=10.0)
+
+        monkeypatch.setattr("reels_agent.job_loop.render_clip", fake_render_clip)
+
+        job.transcript = fake_transcript
+        job.probe = ProbeResult(duration=30.0, width=1280, height=720, fps=24, has_audio=True)
+        approved = [
+            ClipCandidate(id="c1", start=0, end=15, reason="r", score=1.0, source="llm", approved=True),
+            ClipCandidate(id="c2", start=15, end=30, reason="r", score=1.0, source="llm", approved=True),
+        ]
+        job._run_render_pipeline(approved)
+
+        assert job.status == "cancelled"
+        assert len(job.render_results) == 1  # второй клип не запускался
+        assert "1/2" in events[-1][1]
 
 
 class TestSpawnIsAsync:

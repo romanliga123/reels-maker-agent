@@ -33,10 +33,11 @@ class JobLoop:
         self.energy_spans: list[EnergySpan] = []
         self.candidates: list[ClipCandidate] = []
         self.render_results: dict[str, RenderResult] = {}
-        self.status: str = "idle"  # idle | uploading | analyzing | ready_for_review | rendering | done | error
+        self.status: str = "idle"  # idle | uploading | analyzing | ready_for_review | rendering | done | error | cancelled
         self.error: str | None = None
 
         self._lock = threading.Lock()
+        self._cancel_render = threading.Event()
 
     def _emit(self, text: str, kind: str = "progress"):
         self.on_event(text, kind)
@@ -163,15 +164,28 @@ class JobLoop:
             self._emit("❌ Нет одобренных клипов для рендера", "error")
             return
         self.status = "rendering"
+        self._cancel_render.clear()
         self._spawn(self._run_render_pipeline, approved)
+
+    def cancel_render(self):
+        """Просит остановиться после текущего клипа — уже запущенный ffmpeg для
+        текущего клипа не прерывается (чтобы не оставлять битый недописанный файл)."""
+        self._cancel_render.set()
+        self._emit("⏹ Отмена рендера запрошена — остановлюсь после текущего клипа…", "progress")
 
     def _run_render_pipeline(self, approved: list[ClipCandidate]):
         work_dir = config.WORK_DIR / self.session_id
         out_dir = config.OUTPUT_DIR / self.session_id
         total = len(approved)
+        cancelled = False
 
         for i, candidate in enumerate(approved, start=1):
-            self._emit(f"🎬 Рендерю клип {i}/{total}…", "progress")
+            if self._cancel_render.is_set():
+                cancelled = True
+                break
+
+            done_pct = round((i - 1) / total * 100)
+            self._emit(f"🎬 Рендерю клип {i}/{total} ({done_pct}%)…", "progress")
             crop = compute_crop_plan(
                 self.source_path, candidate.start, candidate.end,
                 self.probe.width, self.probe.height,
@@ -179,6 +193,7 @@ class JobLoop:
             result = render_clip(
                 self.source_path, candidate, self.transcript, crop,
                 work_dir, out_dir / f"{candidate.id}.mp4",
+                on_progress=self._progress_cb(f"🎬 Клип {i}/{total}:"),
             )
             self.render_results[candidate.id] = result
             if result.error:
@@ -186,6 +201,10 @@ class JobLoop:
             else:
                 self._emit(f"✅ Клип {i}/{total} готов", "progress")
 
-        self.status = "done"
         ok_count = sum(1 for r in self.render_results.values() if not r.error)
-        self._emit(f"✅ Рендер завершён: {ok_count}/{total} клипов готовы", "render_done")
+        if cancelled:
+            self.status = "cancelled"
+            self._emit(f"⏹ Рендер отменён: {ok_count}/{total} клипов готовы", "render_done")
+        else:
+            self.status = "done"
+            self._emit(f"✅ Рендер завершён: {ok_count}/{total} клипов готовы", "render_done")

@@ -37,6 +37,14 @@ class TestConfigured:
         assert "X-Amz-Expires=7200" in url
         assert "X-Amz-Signature" in url
 
+    def test_presigned_put_url_with_content_type_signs_it(self, monkeypatch):
+        """Без ContentType в подписи S3 сохраняет объект как application/octet-stream,
+        и браузер потом скачивает видео вместо проигрывания — content-type должен
+        попасть в подписанные заголовки, чтобы PUT с этим заголовком прошёл проверку."""
+        _enable_s3(monkeypatch)
+        url = storage.presigned_put_url("session123/source.mp4", content_type="video/mp4")
+        assert "content-type" in url.lower()
+
     def test_delete_object_calls_s3_delete(self, monkeypatch):
         _enable_s3(monkeypatch)
         calls = []
@@ -60,6 +68,19 @@ class TestMultipart:
 
         monkeypatch.setattr(storage, "_client", lambda: FakeClient())
         assert storage.create_multipart_upload("session123/source.mp4") == "upload-abc"
+
+    def test_create_multipart_upload_passes_content_type(self, monkeypatch):
+        _enable_s3(monkeypatch)
+        calls = []
+
+        class FakeClient:
+            def create_multipart_upload(self, **kwargs):
+                calls.append(kwargs)
+                return {"UploadId": "upload-abc"}
+
+        monkeypatch.setattr(storage, "_client", lambda: FakeClient())
+        storage.create_multipart_upload("session123/source.mp4", content_type="video/mp4")
+        assert calls == [{"Bucket": "test-bucket", "Key": "session123/source.mp4", "ContentType": "video/mp4"}]
 
     def test_presigned_upload_part_url_returns_signed_url(self, monkeypatch):
         _enable_s3(monkeypatch)

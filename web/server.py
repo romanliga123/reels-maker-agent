@@ -87,6 +87,13 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
 
 
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+VIDEO_CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".webm": "video/webm",
+}
 
 
 @app.post("/api/{session_id}/upload-url")
@@ -109,12 +116,13 @@ async def get_upload_url(session_id: str, body: dict):
     job: JobLoop = sess["job"]
     key = f"{session_id}/source{suffix}"
     job.storage_key = key
+    content_type = VIDEO_CONTENT_TYPES.get(suffix, "application/octet-stream")
 
     if size > config.S3_MULTIPART_THRESHOLD_BYTES:
         part_size = config.S3_MULTIPART_PART_SIZE_BYTES
         num_parts = math.ceil(size / part_size)
         try:
-            upload_id = storage.create_multipart_upload(key)
+            upload_id = storage.create_multipart_upload(key, content_type=content_type)
             parts = [
                 {
                     "part_number": n,
@@ -128,10 +136,10 @@ async def get_upload_url(session_id: str, body: dict):
         return {"mode": "multipart", "key": key, "upload_id": upload_id, "part_size": part_size, "parts": parts}
 
     try:
-        put_url = storage.presigned_put_url(key)
+        put_url = storage.presigned_put_url(key, content_type=content_type)
     except storage.StorageError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"mode": "single", "upload_url": put_url, "key": key}
+    return {"mode": "single", "upload_url": put_url, "key": key, "content_type": content_type}
 
 
 @app.post("/api/{session_id}/upload-complete")
@@ -235,6 +243,14 @@ async def start_render(session_id: str):
     return {"ok": True}
 
 
+@app.post("/api/{session_id}/render/cancel")
+async def cancel_render(session_id: str):
+    sess = _get_or_create_session(session_id)
+    job: JobLoop = sess["job"]
+    job.cancel_render()
+    return {"ok": True}
+
+
 @app.get("/api/{session_id}/render/status")
 async def render_status(session_id: str):
     sess = _get_or_create_session(session_id)
@@ -305,6 +321,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         _send("🔄 Рендер уже идёт, жду обновлений…", "progress")
     elif job.status == "done":
         _send("✅ Рендер завершён", "render_done")
+    elif job.status == "cancelled":
+        _send("⏹ Рендер был отменён", "render_done")
     elif job.status == "error" and job.error:
         _send(f"❌ {job.error}", "error")
 
