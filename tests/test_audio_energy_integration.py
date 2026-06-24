@@ -58,3 +58,13 @@ def test_spans_sorted_by_score_descending(burst_wav):
     spans = detect_energy_spans(burst_wav)
     scores = [s.score for s in spans]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_small_chunk_size_finds_same_bursts(burst_wav):
+    """С маленьким chunk_sec файл читается частями несколько раз — границы чанков
+    не должны ломать детекцию (важно для длинных видео, где это включается всегда)."""
+    spans = detect_energy_spans(burst_wav, chunk_sec=3.0)
+    assert len(spans) >= 2
+    starts = sorted(s.start for s in spans)
+    assert any(3.5 <= s <= 6.5 for s in starts)
+    assert any(10.0 <= s <= 13.5 for s in starts)
