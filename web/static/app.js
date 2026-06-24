@@ -102,12 +102,12 @@ async function uploadDirect(file) {
 
 async function uploadViaS3(file) {
   appendProgress("⬆️ Получаю ссылку для загрузки…", "progress");
-  let uploadUrl;
+  let data;
   try {
     const urlResp = await fetch(`/api/${sessionId}/upload-url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name }),
+      body: JSON.stringify({ filename: file.name, size: file.size }),
     });
     if (!urlResp.ok) {
       const err = await urlResp.json();
@@ -115,7 +115,7 @@ async function uploadViaS3(file) {
       uploadBtn.disabled = false;
       return;
     }
-    ({ upload_url: uploadUrl } = await urlResp.json());
+    data = await urlResp.json();
   } catch (e) {
     appendProgress(`❌ ${e}`, "error");
     uploadBtn.disabled = false;
@@ -123,8 +123,13 @@ async function uploadViaS3(file) {
   }
 
   appendProgress(`⬆️ Загружаю ${file.name} напрямую в хранилище…`, "progress");
+  let completeBody = {};
   try {
-    await putFileWithProgress(uploadUrl, file);
+    if (data.mode === "multipart") {
+      completeBody = { parts: await uploadMultipart(file, data) };
+    } else {
+      await putFileWithProgress(data.upload_url, file);
+    }
   } catch (e) {
     appendProgress(`❌ Загрузка не удалась: ${e.message || e}`, "error");
     uploadBtn.disabled = false;
@@ -133,7 +138,11 @@ async function uploadViaS3(file) {
 
   appendProgress("✅ Файл загружен, начинаю анализ…", "progress");
   try {
-    const completeResp = await fetch(`/api/${sessionId}/upload-complete`, { method: "POST" });
+    const completeResp = await fetch(`/api/${sessionId}/upload-complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(completeBody),
+    });
     if (!completeResp.ok) {
       const err = await completeResp.json();
       appendProgress(`❌ ${err.detail || "Ошибка завершения загрузки"}`, "error");
@@ -143,6 +152,40 @@ async function uploadViaS3(file) {
     appendProgress(`❌ ${e}`, "error");
     uploadBtn.disabled = false;
   }
+}
+
+async function uploadMultipart(file, { part_size, parts }) {
+  const total = file.size;
+  let uploadedBefore = 0;
+  const completed = [];
+  for (const part of parts) {
+    const start = (part.part_number - 1) * part_size;
+    const end = Math.min(start + part_size, total);
+    const blob = file.slice(start, end);
+    const etag = await putPartWithProgress(part.url, blob, (loaded) => {
+      updateUploadProgressLine(Math.round(((uploadedBefore + loaded) / total) * 100));
+    });
+    uploadedBefore += end - start;
+    completed.push({ part_number: part.part_number, etag });
+    updateUploadProgressLine(Math.round((uploadedBefore / total) * 100));
+  }
+  return completed;
+}
+
+function putPartWithProgress(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.getResponseHeader("ETag"));
+      else reject(new Error(`HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("ошибка сети"));
+    xhr.send(blob);
+  });
 }
 
 function putFileWithProgress(url, file) {

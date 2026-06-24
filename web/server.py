@@ -7,6 +7,7 @@ Reels Maker Agent — Web Server (FastAPI)
 import sys
 import uuid
 import json
+import math
 import time
 import asyncio
 import dataclasses
@@ -14,7 +15,7 @@ import threading
 import queue as _queue
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 
@@ -90,33 +91,68 @@ ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 @app.post("/api/{session_id}/upload-url")
 async def get_upload_url(session_id: str, body: dict):
-    """Возвращает presigned PUT URL — браузер льёт файл напрямую в S3-хранилище, минуя сервер."""
+    """Возвращает presigned PUT URL — браузер льёт файл напрямую в S3-хранилище, минуя сервер.
+
+    Файлы крупнее S3_MULTIPART_THRESHOLD_BYTES (по умолчанию 4 ГиБ) не лезут в один
+    PUT — у протокола S3 жёсткий лимит 5 ГиБ на объект за один PUT. Для них отдаём
+    набор presigned URL на части (multipart upload)."""
     if not config.S3_ENABLED:
         raise HTTPException(status_code=503, detail="Хранилище не настроено на сервере")
 
     filename = str(body.get("filename", "source.mp4"))
+    size = int(body.get("size", 0))
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_VIDEO_SUFFIXES:
         raise HTTPException(status_code=400, detail=f"Тип файла не поддерживается: {suffix}")
 
     sess = _get_or_create_session(session_id)
+    job: JobLoop = sess["job"]
     key = f"{session_id}/source{suffix}"
-    sess["job"].storage_key = key
+    job.storage_key = key
+
+    if size > config.S3_MULTIPART_THRESHOLD_BYTES:
+        part_size = config.S3_MULTIPART_PART_SIZE_BYTES
+        num_parts = math.ceil(size / part_size)
+        try:
+            upload_id = storage.create_multipart_upload(key)
+            parts = [
+                {
+                    "part_number": n,
+                    "url": storage.presigned_upload_part_url(key, upload_id, n, expires_in=config.SESSION_TTL_SEC),
+                }
+                for n in range(1, num_parts + 1)
+            ]
+        except storage.StorageError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        job.upload_id = upload_id
+        return {"mode": "multipart", "key": key, "upload_id": upload_id, "part_size": part_size, "parts": parts}
 
     try:
         put_url = storage.presigned_put_url(key)
     except storage.StorageError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    return {"upload_url": put_url, "key": key}
+    return {"mode": "single", "upload_url": put_url, "key": key}
 
 
 @app.post("/api/{session_id}/upload-complete")
-async def upload_complete(session_id: str):
-    """Браузер сообщает, что файл уже долетел до хранилища — запускаем анализ по presigned GET URL."""
+async def upload_complete(session_id: str, body: dict = Body(default={})):
+    """Браузер сообщает, что файл уже долетел до хранилища — запускаем анализ по presigned GET URL.
+
+    Для multipart-загрузки в теле запроса должны быть части с ETag (их отдаёт S3
+    в ответ на каждый PUT части) — без этого S3 не сможет склеить файл."""
     sess = _get_or_create_session(session_id)
     job: JobLoop = sess["job"]
     if not job.storage_key:
         raise HTTPException(status_code=400, detail="upload-url не был запрошен для этой сессии")
+
+    if job.upload_id:
+        parts = body.get("parts")
+        if not parts:
+            raise HTTPException(status_code=400, detail="Не переданы части multipart-загрузки")
+        try:
+            storage.complete_multipart_upload(job.storage_key, job.upload_id, parts)
+        except storage.StorageError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
     try:
         get_url = storage.presigned_get_url(job.storage_key, expires_in=config.SESSION_TTL_SEC + 3600)

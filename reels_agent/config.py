@@ -40,3 +40,9 @@ S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID", "")
 S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "")
 S3_ENABLED = bool(S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY and S3_BUCKET_NAME)
+
+# Один PUT-запрос в S3-совместимое хранилище ограничен 5 ГБ протоколом S3 —
+# файлы крупнее этого порога заливаются через multipart upload (части по
+# S3_MULTIPART_PART_SIZE_BYTES, presigned URL на каждую часть).
+S3_MULTIPART_THRESHOLD_BYTES = 4 * 1024 ** 3  # 4 ГиБ — с запасом от лимита в 5 ГиБ
+S3_MULTIPART_PART_SIZE_BYTES = 100 * 1024 ** 2  # 100 МиБ на часть

@@ -63,3 +63,45 @@ def presigned_get_url(key: str, expires_in: int) -> str:
 def delete_object(key: str):
     """Удаляет объект из хранилища — вызывается из задачи очистки старых сессий."""
     _client().delete_object(Bucket=config.S3_BUCKET_NAME, Key=key)
+
+
+def create_multipart_upload(key: str) -> str:
+    """Открывает multipart-загрузку для файлов крупнее лимита одного PUT (5 ГБ у S3). Возвращает UploadId."""
+    try:
+        resp = _client().create_multipart_upload(Bucket=config.S3_BUCKET_NAME, Key=key)
+        return resp["UploadId"]
+    except StorageError:
+        raise
+    except Exception as e:
+        raise StorageError(f"Не удалось открыть multipart-загрузку: {e}")
+
+
+def presigned_upload_part_url(key: str, upload_id: str, part_number: int, expires_in: int) -> str:
+    """URL, в который браузер PUT'ит одну часть файла в рамках multipart-загрузки."""
+    try:
+        return _client().generate_presigned_url(
+            "upload_part",
+            Params={"Bucket": config.S3_BUCKET_NAME, "Key": key, "UploadId": upload_id, "PartNumber": part_number},
+            ExpiresIn=expires_in,
+        )
+    except StorageError:
+        raise
+    except Exception as e:
+        raise StorageError(f"Не удалось создать presigned URL для части: {e}")
+
+
+def complete_multipart_upload(key: str, upload_id: str, parts: list[dict]) -> None:
+    """Завершает multipart-загрузку, склеивая части в один объект. parts: [{"part_number": int, "etag": str}, ...]."""
+    try:
+        _client().complete_multipart_upload(
+            Bucket=config.S3_BUCKET_NAME,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={
+                "Parts": [{"ETag": p["etag"], "PartNumber": p["part_number"]} for p in parts]
+            },
+        )
+    except StorageError:
+        raise
+    except Exception as e:
+        raise StorageError(f"Не удалось завершить multipart-загрузку: {e}")

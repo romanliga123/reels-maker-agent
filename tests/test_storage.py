@@ -48,3 +48,39 @@ class TestConfigured:
         monkeypatch.setattr(storage, "_client", lambda: FakeClient())
         storage.delete_object("session123/source.mp4")
         assert calls == [("test-bucket", "session123/source.mp4")]
+
+
+class TestMultipart:
+    def test_create_multipart_upload_returns_upload_id(self, monkeypatch):
+        _enable_s3(monkeypatch)
+
+        class FakeClient:
+            def create_multipart_upload(self, Bucket, Key):
+                return {"UploadId": "upload-abc"}
+
+        monkeypatch.setattr(storage, "_client", lambda: FakeClient())
+        assert storage.create_multipart_upload("session123/source.mp4") == "upload-abc"
+
+    def test_presigned_upload_part_url_returns_signed_url(self, monkeypatch):
+        _enable_s3(monkeypatch)
+        url = storage.presigned_upload_part_url("session123/source.mp4", "upload-abc", 1, expires_in=3600)
+        assert url.startswith("https://storage.yandexcloud.net/test-bucket/session123/source.mp4")
+        assert "X-Amz-Signature" in url
+
+    def test_complete_multipart_upload_calls_s3(self, monkeypatch):
+        _enable_s3(monkeypatch)
+        calls = []
+
+        class FakeClient:
+            def complete_multipart_upload(self, Bucket, Key, UploadId, MultipartUpload):
+                calls.append((Bucket, Key, UploadId, MultipartUpload))
+
+        monkeypatch.setattr(storage, "_client", lambda: FakeClient())
+        storage.complete_multipart_upload(
+            "session123/source.mp4", "upload-abc",
+            [{"part_number": 1, "etag": "e1"}, {"part_number": 2, "etag": "e2"}],
+        )
+        assert calls == [(
+            "test-bucket", "session123/source.mp4", "upload-abc",
+            {"Parts": [{"ETag": "e1", "PartNumber": 1}, {"ETag": "e2", "PartNumber": 2}]},
+        )]

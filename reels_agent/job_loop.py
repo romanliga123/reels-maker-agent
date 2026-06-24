@@ -25,8 +25,9 @@ class JobLoop:
         self.session_id = session_id
         self.on_event = lambda text, kind: None  # переопределяется сервером
 
-        self.source_path: str | Path | None = None  # локальный путь или presigned URL (R2)
-        self.storage_key: str | None = None  # ключ объекта в R2, для очистки после сессии
+        self.source_path: str | Path | None = None  # локальный путь или presigned URL (S3)
+        self.storage_key: str | None = None  # ключ объекта в S3, для очистки после сессии
+        self.upload_id: str | None = None  # id multipart-загрузки в S3, если файл крупнее порога
         self.probe: ProbeResult | None = None
         self.transcript: list[TranscriptSegment] = []
         self.energy_spans: list[EnergySpan] = []

@@ -191,14 +191,15 @@ class TestPresignedUploadFlow:
 
     def test_upload_url_returns_put_url_and_stores_key(self, client, monkeypatch):
         monkeypatch.setattr(config, "S3_ENABLED", True)
-        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.r2/{key}?sig=abc")
+        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.s3/{key}?sig=abc")
 
         sid = new_session_id()
-        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 1024})
         assert resp.status_code == 200
         body = resp.json()
+        assert body["mode"] == "single"
         assert body["key"] == f"{sid}/source.mp4"
-        assert body["upload_url"] == f"https://fake.r2/{sid}/source.mp4?sig=abc"
+        assert body["upload_url"] == f"https://fake.s3/{sid}/source.mp4?sig=abc"
 
         job = _get_or_create_session(sid)["job"]
         assert job.storage_key == f"{sid}/source.mp4"
@@ -211,8 +212,30 @@ class TestPresignedUploadFlow:
 
         monkeypatch.setattr(storage, "presigned_put_url", boom)
         sid = new_session_id()
-        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 1024})
         assert resp.status_code == 502
+
+    def test_upload_url_above_threshold_returns_multipart_plan(self, client, monkeypatch):
+        monkeypatch.setattr(config, "S3_ENABLED", True)
+        monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
+        monkeypatch.setattr(config, "S3_MULTIPART_PART_SIZE_BYTES", 40)
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(
+            storage, "presigned_upload_part_url",
+            lambda key, upload_id, part_number, expires_in: f"https://fake.s3/{key}?part={part_number}",
+        )
+
+        sid = new_session_id()
+        resp = client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 120})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "multipart"
+        assert body["upload_id"] == "upload-123"
+        assert body["part_size"] == 40
+        assert [p["part_number"] for p in body["parts"]] == [1, 2, 3]
+
+        job = _get_or_create_session(sid)["job"]
+        assert job.upload_id == "upload-123"
 
     def test_upload_complete_without_prior_upload_url_400(self, client):
         sid = new_session_id()
@@ -221,18 +244,53 @@ class TestPresignedUploadFlow:
 
     def test_upload_complete_triggers_analysis(self, client, monkeypatch):
         monkeypatch.setattr(config, "S3_ENABLED", True)
-        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.r2/{key}")
-        monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.r2/{key}?get=1")
+        monkeypatch.setattr(storage, "presigned_put_url", lambda key, **kw: f"https://fake.s3/{key}")
+        monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.s3/{key}?get=1")
 
         started_with = []
         monkeypatch.setattr(JobLoop, "start_analysis", lambda self, path: started_with.append(path))
 
         sid = new_session_id()
-        client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4"})
+        client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 1024})
         resp = client.post(f"/api/{sid}/upload-complete")
 
         assert resp.status_code == 200
-        assert started_with == [f"https://fake.r2/{sid}/source.mp4?get=1"]
+        assert started_with == [f"https://fake.s3/{sid}/source.mp4?get=1"]
+
+    def test_upload_complete_multipart_without_parts_400(self, client, monkeypatch):
+        monkeypatch.setattr(config, "S3_ENABLED", True)
+        monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(storage, "presigned_upload_part_url", lambda *a, **kw: "https://fake.s3/part")
+
+        sid = new_session_id()
+        client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 200})
+        resp = client.post(f"/api/{sid}/upload-complete")
+        assert resp.status_code == 400
+
+    def test_upload_complete_multipart_completes_and_starts_analysis(self, client, monkeypatch):
+        monkeypatch.setattr(config, "S3_ENABLED", True)
+        monkeypatch.setattr(config, "S3_MULTIPART_THRESHOLD_BYTES", 100)
+        monkeypatch.setattr(storage, "create_multipart_upload", lambda key: "upload-123")
+        monkeypatch.setattr(storage, "presigned_upload_part_url", lambda *a, **kw: "https://fake.s3/part")
+        monkeypatch.setattr(storage, "presigned_get_url", lambda key, expires_in: f"https://fake.s3/{key}?get=1")
+
+        completed_with = []
+        monkeypatch.setattr(
+            storage, "complete_multipart_upload",
+            lambda key, upload_id, parts: completed_with.append((key, upload_id, parts)),
+        )
+        started_with = []
+        monkeypatch.setattr(JobLoop, "start_analysis", lambda self, path: started_with.append(path))
+
+        sid = new_session_id()
+        client.post(f"/api/{sid}/upload-url", json={"filename": "clip.mp4", "size": 200})
+        parts = [{"part_number": 1, "etag": "etag1"}, {"part_number": 2, "etag": "etag2"}]
+        resp = client.post(f"/api/{sid}/upload-complete", json={"parts": parts})
+
+        assert resp.status_code == 200
+        assert completed_with == [(f"{sid}/source.mp4", "upload-123", parts)]
+        assert started_with == [f"https://fake.s3/{sid}/source.mp4?get=1"]
 
 
 class TestWebsocket:
