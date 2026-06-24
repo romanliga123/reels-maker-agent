@@ -25,11 +25,11 @@ class TestRunAnalysisPipelineHappyPath:
     def test_full_pipeline_sets_ready_status(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.probe_video",
                             lambda p: ProbeResult(duration=30.0, width=1280, height=720, fps=24, has_audio=True))
-        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst: dst)
+        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst, **kw: dst)
         monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio", lambda *a, **kw: fake_transcript)
-        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav: [EnergySpan(5.0, 6.0, 2.0)])
+        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav, **kw: [EnergySpan(5.0, 6.0, 2.0)])
         monkeypatch.setattr("reels_agent.job_loop.analyze_hooks",
-                            lambda transcript: [HookSpan(0.0, 4.0, "тест", "hook")])
+                            lambda transcript, **kw: [HookSpan(0.0, 4.0, "тест", "hook")])
 
         events = []
         job = make_job(events)
@@ -44,10 +44,10 @@ class TestRunAnalysisPipelineHappyPath:
     def test_emits_progress_events_in_order(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.probe_video",
                             lambda p: ProbeResult(duration=30.0, width=1280, height=720, fps=24, has_audio=True))
-        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst: dst)
+        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst, **kw: dst)
         monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio", lambda *a, **kw: fake_transcript)
-        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav: [])
-        monkeypatch.setattr("reels_agent.job_loop.analyze_hooks", lambda transcript: [])
+        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav, **kw: [])
+        monkeypatch.setattr("reels_agent.job_loop.analyze_hooks", lambda transcript, **kw: [])
 
         events = []
         job = make_job(events)
@@ -57,6 +57,28 @@ class TestRunAnalysisPipelineHappyPath:
         assert kinds[-1] == "ready"
         assert kinds[:-1] == ["progress"] * (len(kinds) - 1)
         assert len(kinds) >= 5  # видео/аудио/транскрипция/эвристика/хуки — несколько стадий прогресса
+
+    def test_stage_progress_callbacks_forwarded_as_separate_events(self, monkeypatch, fake_transcript):
+        """on_progress из пайплайн-функций должен доходить до фронтенда как kind=stage_progress,
+        не как обычная строка ленты прогресса (иначе на лонг-стадиях лента будет засыпана строками)."""
+        monkeypatch.setattr("reels_agent.job_loop.probe_video",
+                            lambda p: ProbeResult(duration=30.0, width=1280, height=720, fps=24, has_audio=True))
+
+        def fake_extract_audio(src, dst, **kw):
+            kw["on_progress"](0.5)
+            return dst
+
+        monkeypatch.setattr("reels_agent.job_loop.extract_audio", fake_extract_audio)
+        monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio", lambda *a, **kw: fake_transcript)
+        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav, **kw: [])
+        monkeypatch.setattr("reels_agent.job_loop.analyze_hooks", lambda transcript, **kw: [])
+
+        events = []
+        job = make_job(events)
+        job._run_analysis_pipeline()
+
+        stage_events = [text for kind, text in events if kind == "stage_progress"]
+        assert any("50%" in text for text in stage_events)
 
 
 class TestRunAnalysisPipelineErrors:
@@ -86,7 +108,7 @@ class TestRunAnalysisPipelineErrors:
         monkeypatch.setattr("reels_agent.job_loop.probe_video",
                             lambda p: ProbeResult(duration=10.0, width=640, height=360, fps=24, has_audio=True))
         monkeypatch.setattr("reels_agent.job_loop.extract_audio",
-                            lambda src, dst: (_ for _ in ()).throw(AudioExtractError("ffmpeg упал")))
+                            lambda src, dst, **kw: (_ for _ in ()).throw(AudioExtractError("ffmpeg упал")))
         events = []
         job = make_job(events)
         job._run_analysis_pipeline()
@@ -97,7 +119,7 @@ class TestRunAnalysisPipelineErrors:
     def test_transcribe_error_stops_pipeline(self, monkeypatch):
         monkeypatch.setattr("reels_agent.job_loop.probe_video",
                             lambda p: ProbeResult(duration=10.0, width=640, height=360, fps=24, has_audio=True))
-        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst: dst)
+        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst, **kw: dst)
         monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio",
                             lambda *a, **kw: (_ for _ in ()).throw(TranscribeError("groq недоступен")))
         events = []
@@ -111,11 +133,11 @@ class TestRunAnalysisPipelineErrors:
     def test_hook_analysis_error_stops_pipeline(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.probe_video",
                             lambda p: ProbeResult(duration=10.0, width=640, height=360, fps=24, has_audio=True))
-        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst: dst)
+        monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst, **kw: dst)
         monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio", lambda *a, **kw: fake_transcript)
-        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav: [])
+        monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav, **kw: [])
         monkeypatch.setattr("reels_agent.job_loop.analyze_hooks",
-                            lambda transcript: (_ for _ in ()).throw(HookAnalysisError("llm сломался")))
+                            lambda transcript, **kw: (_ for _ in ()).throw(HookAnalysisError("llm сломался")))
         events = []
         job = make_job(events)
         job._run_analysis_pipeline()

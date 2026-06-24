@@ -41,6 +41,19 @@ class JobLoop:
     def _emit(self, text: str, kind: str = "progress"):
         self.on_event(text, kind)
 
+    def _progress_cb(self, label: str):
+        """callback(fraction 0..1) -> шлёт "label NN%" не чаще, чем раз на изменившийся процент,
+        отдельным WS-сообщением kind="stage_progress" (фронтенд обновляет одну строку, не плодит ленту)."""
+        state = {"last_pct": -1}
+
+        def cb(fraction: float):
+            pct = max(0, min(100, int(fraction * 100)))
+            if pct != state["last_pct"]:
+                state["last_pct"] = pct
+                self._emit(f"{label} {pct}%", "stage_progress")
+
+        return cb
+
     def _spawn(self, fn, *args, **kwargs):
         def _run():
             try:
@@ -92,7 +105,11 @@ class JobLoop:
 
         self._emit("🎧 Извлекаю аудио…", "progress")
         try:
-            extract_audio(self.source_path, wav_path)
+            extract_audio(
+                self.source_path, wav_path,
+                total_duration_sec=self.probe.duration,
+                on_progress=self._progress_cb("🎧 Извлекаю аудио…"),
+            )
         except AudioExtractError as e:
             self.status = "error"
             self.error = str(e)
@@ -101,7 +118,10 @@ class JobLoop:
 
         self._emit("📝 Распознаю речь…", "progress")
         try:
-            self.transcript = transcribe_long_audio(wav_path, work_dir)
+            self.transcript = transcribe_long_audio(
+                wav_path, work_dir,
+                on_progress=self._progress_cb("📝 Распознаю речь…"),
+            )
         except TranscribeError as e:
             self.status = "error"
             self.error = str(e)
@@ -110,12 +130,16 @@ class JobLoop:
         self._emit(f"✅ Распознано {len(self.transcript)} фрагментов речи", "progress")
 
         self._emit("😂 Ищу пики смеха и эмоций по аудио…", "progress")
-        self.energy_spans = detect_energy_spans(wav_path)
+        self.energy_spans = detect_energy_spans(
+            wav_path, on_progress=self._progress_cb("😂 Ищу пики смеха и эмоций…"),
+        )
         self._emit(f"✅ Найдено {len(self.energy_spans)} эмоциональных всплесков", "progress")
 
         self._emit("🧠 Анализирую транскрипт на хуки, шутки и тезисы…", "progress")
         try:
-            hook_spans = analyze_hooks(self.transcript)
+            hook_spans = analyze_hooks(
+                self.transcript, on_progress=self._progress_cb("🧠 Анализирую транскрипт…"),
+            )
         except HookAnalysisError as e:
             self.status = "error"
             self.error = str(e)

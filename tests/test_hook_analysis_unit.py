@@ -89,3 +89,14 @@ class TestAnalyzeHooks:
         spans = analyze_hooks(fake_transcript, window_sec=1000)
         assert len(spans) == 1
         assert spans[0].reason == "нормальный"
+
+    def test_on_progress_reaches_100_percent(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        monkeypatch.setattr("reels_agent.pipeline.hook_analysis._call_groq_json", lambda client, prompt: [])
+
+        fractions = []
+        analyze_hooks(fake_transcript, window_sec=5, on_progress=fractions.append)
+
+        assert fractions[-1] == 1.0
+        assert all(0.0 <= f <= 1.0 for f in fractions)

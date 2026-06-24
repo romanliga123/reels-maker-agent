@@ -7,6 +7,7 @@
 """
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 from groq import Groq
 
@@ -118,10 +119,13 @@ def split_audio_chunks(wav_path: Path, chunk_dir: Path,
 
 
 def transcribe_long_audio(wav_path: Path, work_dir: Path, language: str = "ru",
-                           overlap_sec: int = 5) -> list[TranscriptSegment]:
+                           overlap_sec: int = 5,
+                           on_progress: Callable[[float], None] | None = None) -> list[TranscriptSegment]:
     """Транскрибирует длинный WAV через чанкинг и сшивает результат с офсетом таймкодов."""
     size = wav_path.stat().st_size
     if size <= config.WHISPER_CHUNK_LIMIT_BYTES:
+        if on_progress:
+            on_progress(1.0)
         return transcribe_wav(wav_path, language)
 
     chunk_dir = work_dir / "chunks"
@@ -130,6 +134,8 @@ def transcribe_long_audio(wav_path: Path, work_dir: Path, language: str = "ru",
     merged: list[TranscriptSegment] = []
     for i, (chunk_path, offset) in enumerate(chunks):
         chunk_segments = transcribe_wav(chunk_path, language)
+        if on_progress:
+            on_progress((i + 1) / len(chunks))
         for seg in chunk_segments:
             # Перекрытие отрезаем только у не-первых чанков: всё, что начинается
             # внутри overlap_sec от начала чанка, уже покрыто хвостом предыдущего.

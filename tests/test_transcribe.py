@@ -120,6 +120,20 @@ class TestTranscribeLongAudioMerge:
         for seg in segments:
             assert seg.words[0].start == seg.start
 
+    def test_on_progress_reaches_100_percent_across_chunks(self, long_wav, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "WHISPER_CHUNK_LIMIT_BYTES", 1)
+        monkeypatch.setattr(config, "WHISPER_CHUNK_TARGET_SEC", 5)
+        monkeypatch.setattr(
+            "reels_agent.pipeline.transcribe.transcribe_wav",
+            lambda chunk_path, language="ru": [],
+        )
+
+        fractions = []
+        transcribe_long_audio(long_wav, tmp_path, overlap_sec=1, on_progress=fractions.append)
+
+        assert fractions[-1] == 1.0
+        assert all(0.0 <= f <= 1.0 for f in fractions)
+
     def test_short_file_skips_chunking_entirely(self, long_wav, monkeypatch):
         calls = []
         monkeypatch.setattr(

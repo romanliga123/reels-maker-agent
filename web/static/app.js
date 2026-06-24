@@ -44,6 +44,11 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "ping") return;
+    if (msg.type === "stage_progress") {
+      updateStageProgressLine(msg.text);
+      return;
+    }
+    clearStageProgressLine();
     appendProgress(msg.text, msg.type);
     if (msg.type === "ready") {
       loadCandidates();
@@ -67,6 +72,22 @@ function appendProgress(text, kind) {
   line.textContent = text;
   progressFeed.appendChild(line);
   progressFeed.scrollTop = progressFeed.scrollHeight;
+}
+
+function updateStageProgressLine(text) {
+  progressSection.classList.remove("hidden");
+  let line = document.getElementById("stage-progress-line");
+  if (!line) {
+    line = document.createElement("div");
+    line.id = "stage-progress-line";
+    progressFeed.appendChild(line);
+  }
+  line.textContent = text;
+  progressFeed.scrollTop = progressFeed.scrollHeight;
+}
+
+function clearStageProgressLine() {
+  document.getElementById("stage-progress-line")?.remove();
 }
 
 uploadBtn.addEventListener("click", async () => {

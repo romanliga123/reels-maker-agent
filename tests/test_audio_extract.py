@@ -30,3 +30,14 @@ def test_extract_creates_parent_dirs(synth_video, tmp_path):
 def test_extract_raises_on_missing_input(tmp_path):
     with pytest.raises(AudioExtractError):
         extract_audio(tmp_path / "missing.mp4", tmp_path / "out.wav")
+
+
+def test_extract_reports_progress_up_to_full_duration(synth_video, tmp_path):
+    fractions = []
+    extract_audio(
+        synth_video, tmp_path / "audio.wav",
+        total_duration_sec=5.0, on_progress=fractions.append,
+    )
+    assert fractions  # ffmpeg -progress отдал хотя бы один отсчёт за 5с
+    assert all(0.0 <= f <= 1.0 for f in fractions)
+    assert fractions[-1] >= 0.9  # последний отсчёт должен быть близко к концу

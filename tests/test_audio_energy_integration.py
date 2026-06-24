@@ -68,3 +68,11 @@ def test_small_chunk_size_finds_same_bursts(burst_wav):
     starts = sorted(s.start for s in spans)
     assert any(3.5 <= s <= 6.5 for s in starts)
     assert any(10.0 <= s <= 13.5 for s in starts)
+
+
+def test_on_progress_reaches_100_percent(burst_wav):
+    fractions = []
+    detect_energy_spans(burst_wav, chunk_sec=3.0, on_progress=fractions.append)
+    assert fractions
+    assert all(0.0 <= f <= 1.0 for f in fractions)
+    assert fractions[-1] == 1.0

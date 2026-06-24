@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from groq import Groq
 
@@ -109,16 +110,24 @@ def _windows(segments: list[TranscriptSegment], window_sec: float):
         yield window
 
 
-def analyze_hooks(segments: list[TranscriptSegment], window_sec: float = 240) -> list[HookSpan]:
+def analyze_hooks(
+    segments: list[TranscriptSegment],
+    window_sec: float = 240,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[HookSpan]:
     if not config.GROQ_API_KEY:
         raise HookAnalysisError("GROQ_API_KEY не задан")
 
     client = Groq(api_key=config.GROQ_API_KEY, timeout=120.0)
     spans: list[HookSpan] = []
 
-    for window in _windows(segments, window_sec):
+    windows = list(_windows(segments, window_sec))
+    total = len(windows) or 1
+    for i, window in enumerate(windows):
         window_text = _format_window(window)
         if not window_text.strip():
+            if on_progress:
+                on_progress((i + 1) / total)
             continue
         prompt = f"Транскрипт (таймкоды в секундах от начала видео):\n{window_text}"
         items = _call_groq_json(client, prompt)
@@ -138,5 +147,8 @@ def analyze_hooks(segments: list[TranscriptSegment], window_sec: float = 240) ->
             if end - start < 5:
                 continue
             spans.append(HookSpan(start=start, end=end, reason=reason, kind=kind))
+
+        if on_progress:
+            on_progress((i + 1) / total)
 
     return spans
