@@ -59,9 +59,10 @@ async def create_session():
 
 @app.get("/api/config")
 async def get_config():
-    """Фронтенд решает, каким способом грузить файл: напрямую в R2 (большие файлы,
-    нет лимита Render-прокси) или старым способом через сервер (если R2 не настроен)."""
-    return {"r2_enabled": config.R2_ENABLED}
+    """Фронтенд решает, каким способом грузить файл: напрямую в S3-хранилище
+    (большие файлы, нет лимита Render-прокси) или старым способом через сервер
+    (если хранилище не настроено)."""
+    return {"s3_enabled": config.S3_ENABLED}
 
 
 @app.post("/api/{session_id}/upload")
@@ -89,9 +90,9 @@ ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 @app.post("/api/{session_id}/upload-url")
 async def get_upload_url(session_id: str, body: dict):
-    """Возвращает presigned PUT URL — браузер льёт файл напрямую в R2, минуя сервер."""
-    if not config.R2_ENABLED:
-        raise HTTPException(status_code=503, detail="R2 не настроен на сервере")
+    """Возвращает presigned PUT URL — браузер льёт файл напрямую в S3-хранилище, минуя сервер."""
+    if not config.S3_ENABLED:
+        raise HTTPException(status_code=503, detail="Хранилище не настроено на сервере")
 
     filename = str(body.get("filename", "source.mp4"))
     suffix = Path(filename).suffix.lower()
@@ -111,7 +112,7 @@ async def get_upload_url(session_id: str, body: dict):
 
 @app.post("/api/{session_id}/upload-complete")
 async def upload_complete(session_id: str):
-    """Браузер сообщает, что файл уже долетел до R2 — запускаем анализ по presigned GET URL."""
+    """Браузер сообщает, что файл уже долетел до хранилища — запускаем анализ по presigned GET URL."""
     sess = _get_or_create_session(session_id)
     job: JobLoop = sess["job"]
     if not job.storage_key:
@@ -278,7 +279,7 @@ async def _cleanup_task():
         for sid, job in old:
             for base in (config.UPLOADS_DIR, config.WORK_DIR, config.OUTPUT_DIR):
                 shutil.rmtree(base / sid, ignore_errors=True)
-            if job.storage_key and config.R2_ENABLED:
+            if job.storage_key and config.S3_ENABLED:
                 try:
                     storage.delete_object(job.storage_key)
                 except storage.StorageError:

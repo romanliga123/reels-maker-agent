@@ -1,13 +1,13 @@
 let sessionId = null;
 let ws = null;
-let r2Enabled = false;
+let s3Enabled = false;
 let configLoaded = (async () => {
   try {
     const resp = await fetch("/api/config");
     const data = await resp.json();
-    r2Enabled = !!data.r2_enabled;
+    s3Enabled = !!data.s3_enabled;
   } catch (e) {
-    r2Enabled = false;
+    s3Enabled = false;
   }
 })();
 
@@ -70,8 +70,8 @@ uploadBtn.addEventListener("click", async () => {
   await configLoaded;
 
   try {
-    if (r2Enabled) {
-      await uploadViaR2(file);
+    if (s3Enabled) {
+      await uploadViaS3(file);
     } else {
       await uploadDirect(file);
     }
@@ -100,7 +100,7 @@ async function uploadDirect(file) {
   }
 }
 
-async function uploadViaR2(file) {
+async function uploadViaS3(file) {
   appendProgress("⬆️ Получаю ссылку для загрузки…", "progress");
   let uploadUrl;
   try {

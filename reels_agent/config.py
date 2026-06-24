@@ -30,12 +30,13 @@ OUTPUT_HEIGHT = 1920
 
 SESSION_TTL_SEC = 4 * 3600  # сессии и их файлы старше этого удаляются
 
-# Прямая загрузка в Cloudflare R2 (S3-совместимое) — обходит лимиты Render-прокси
-# на размер/длительность запроса. ffmpeg/ffprobe/cv2 читают видео прямо по
-# presigned GET URL через HTTP Range-запросы, без скачивания файла на диск целиком.
-R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID", "")
-R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
-R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
-R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "")
-R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else ""
-R2_ENABLED = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_BUCKET_NAME)
+# Прямая загрузка в S3-совместимое хранилище (по умолчанию Yandex Object Storage) —
+# обходит лимиты Render-прокси на размер/длительность запроса. ffmpeg/ffprobe/cv2
+# читают видео прямо по presigned GET URL через HTTP Range-запросы, без скачивания
+# файла на диск целиком.
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "https://storage.yandexcloud.net")
+S3_REGION = os.getenv("S3_REGION", "ru-central1")
+S3_ACCESS_KEY_ID = os.getenv("S3_ACCESS_KEY_ID", "")
+S3_SECRET_ACCESS_KEY = os.getenv("S3_SECRET_ACCESS_KEY", "")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "")
+S3_ENABLED = bool(S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY and S3_BUCKET_NAME)
