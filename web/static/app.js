@@ -43,6 +43,7 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws/${sessionId}`);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
+    if (msg.type === "ping") return;
     appendProgress(msg.text, msg.type);
     if (msg.type === "ready") {
       loadCandidates();
@@ -50,6 +51,12 @@ function connectWs() {
     if (msg.type === "render_done") {
       loadResults();
     }
+  };
+  // Долгая загрузка большого файла может надолго оставить соединение без трафика —
+  // некоторые прокси (в т.ч. у Render) рвут такие idle-сокеты. Переподключаемся
+  // автоматически, чтобы не терять последующий прогресс анализа/рендера.
+  ws.onclose = () => {
+    if (sessionId) setTimeout(connectWs, 1000);
   };
 }
 

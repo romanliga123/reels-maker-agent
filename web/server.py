@@ -274,11 +274,36 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     job.on_event = _send
     _send(f"Сессия {session_id[:8]}… готова", "connected")
 
+    # Долгая загрузка большого файла может держать соединение "молчащим" много минут —
+    # прокси (в т.ч. у Render) рвут такие idle-сокеты. Ресинхронизируем статус на случай,
+    # если предыдущее WS-соединение уже умерло и часть прогресса была потеряна.
+    if job.status == "analyzing":
+        _send("🔄 Анализ уже идёт, жду обновлений…", "progress")
+    elif job.status == "ready_for_review":
+        _send(f"✅ Анализ завершён, {len(job.candidates)} кандидатов на клипы", "ready")
+    elif job.status == "rendering":
+        _send("🔄 Рендер уже идёт, жду обновлений…", "progress")
+    elif job.status == "done":
+        _send("✅ Рендер завершён", "render_done")
+    elif job.status == "error" and job.error:
+        _send(f"❌ {job.error}", "error")
+
     async def _send_loop():
+        last_sent = time.time()
         while True:
             try:
+                sent_any = False
                 while not send_q.empty():
                     await websocket.send_text(send_q.get_nowait())
+                    sent_any = True
+                now = time.time()
+                if sent_any:
+                    last_sent = now
+                elif now - last_sent > 20:
+                    # Keepalive: без неё прокси рвут "молчащий" сокет во время долгой
+                    # загрузки большого файла, и весь дальнейший прогресс анализа теряется.
+                    await websocket.send_text(json.dumps({"type": "ping", "text": ""}))
+                    last_sent = now
             except Exception:
                 return
             await asyncio.sleep(0.05)
