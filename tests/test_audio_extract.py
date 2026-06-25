@@ -41,3 +41,25 @@ def test_extract_reports_progress_up_to_full_duration(synth_video, tmp_path):
     assert fractions  # ffmpeg -progress отдал хотя бы один отсчёт за 5с
     assert all(0.0 <= f <= 1.0 for f in fractions)
     assert fractions[-1] >= 0.9  # последний отсчёт должен быть близко к концу
+
+
+def test_extract_ignores_na_progress_lines(monkeypatch, tmp_path):
+    """ffmpeg иногда шлёт 'out_time_ms=N/A' в первых строках прогресса, до того как
+    появятся реальные данные — int('N/A') не должен валить весь рендер (было OOM-смежной
+    причиной ошибки 'invalid literal for int() with base 10: 'N/A'' в проде)."""
+    class FakeProc:
+        returncode = 0
+        stdout = iter(["out_time_ms=N/A\n", "out_time_ms=2500000\n", "progress=end\n"])
+
+        def wait(self, timeout=None):
+            pass
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: FakeProc())
+
+    fractions = []
+    out_wav = tmp_path / "audio.wav"
+    extract_audio(
+        out_wav.parent / "fake.mp4", out_wav,
+        total_duration_sec=5.0, on_progress=fractions.append,
+    )
+    assert fractions == [0.5]

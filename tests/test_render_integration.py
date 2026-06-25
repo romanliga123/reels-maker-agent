@@ -109,6 +109,33 @@ def test_extract_clip_segment_then_render_uses_correct_local_offset(
     assert abs(actual_duration - (candidate.end - candidate.start)) < 0.3
 
 
+def test_render_clip_ignores_na_progress_lines(monkeypatch, fake_transcript, tmp_path):
+    """Та же N/A-защита, что и в audio_extract — ffmpeg -progress может прислать
+    'out_time_ms=N/A' до появления реальных данных, int() на нём не должен валить рендер."""
+    from reels_agent.pipeline.face_track import CropPlan
+
+    class FakeProc:
+        returncode = 0
+        stdout = iter(["out_time_ms=N/A\n", "out_time_ms=2000000\n", "progress=end\n"])
+
+        def wait(self, timeout=None):
+            pass
+
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: FakeProc())
+
+    candidate = ClipCandidate(
+        id="natest", start=0.0, end=4.0, reason="test", score=1.0, source="manual",
+    )
+    crop = CropPlan(x=0, y=0, width=405, height=720)
+    fractions = []
+    result = render_clip(
+        tmp_path / "fake.mp4", candidate, fake_transcript, crop, tmp_path,
+        tmp_path / "out.mp4", on_progress=fractions.append,
+    )
+    assert result.error is None
+    assert fractions == [0.5]
+
+
 def test_render_clip_reports_error_for_invalid_source(fake_transcript, tmp_path):
     from reels_agent.pipeline.face_track import CropPlan
     candidate = ClipCandidate(

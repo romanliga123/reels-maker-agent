@@ -115,8 +115,11 @@ def render_clip(
     try:
         if proc.stdout is not None:
             for line in proc.stdout:
-                if on_progress and duration > 0 and line.startswith("out_time_ms="):
-                    out_time_sec = int(line.strip().split("=", 1)[1]) / 1_000_000
+                value = line.strip().split("=", 1)[1] if line.startswith("out_time_ms=") else None
+                # ffmpeg иногда шлёт "out_time_ms=N/A" в первых строках прогресса,
+                # до того как появятся реальные данные — пропускаем такие строки.
+                if on_progress and duration > 0 and value is not None and value != "N/A":
+                    out_time_sec = int(value) / 1_000_000
                     on_progress(min(1.0, out_time_sec / duration))
                 else:
                     output_lines.append(line)

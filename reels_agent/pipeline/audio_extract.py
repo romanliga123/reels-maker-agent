@@ -35,9 +35,11 @@ def extract_audio(
     try:
         if proc.stdout is not None:
             for line in proc.stdout:
-                if on_progress and total_duration_sec and line.startswith("out_time_ms="):
+                value = line.strip().split("=", 1)[1] if line.startswith("out_time_ms=") else None
+                # ffmpeg иногда шлёт "out_time_ms=N/A" в первых строках прогресса.
+                if on_progress and total_duration_sec and value is not None and value != "N/A":
                     # ffmpeg называет это "ms", но значение на самом деле в микросекундах.
-                    out_time_sec = int(line.strip().split("=", 1)[1]) / 1_000_000
+                    out_time_sec = int(value) / 1_000_000
                     on_progress(min(1.0, out_time_sec / total_duration_sec))
                 else:
                     output_lines.append(line)
