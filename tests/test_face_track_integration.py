@@ -15,3 +15,11 @@ def test_crop_window_stays_within_frame_bounds(synth_video):
     plan = compute_crop_plan(synth_video, 0, 4, 1280, 720)
     assert plan.x >= 0
     assert plan.x + plan.width <= 1280
+
+
+def test_on_progress_reaches_100_percent(synth_video):
+    fractions = []
+    compute_crop_plan(synth_video, 0, 4, 1280, 720, on_progress=fractions.append)
+    assert fractions
+    assert all(0.0 <= f <= 1.0 for f in fractions)
+    assert fractions[-1] == 1.0

@@ -189,6 +189,7 @@ class JobLoop:
             crop = compute_crop_plan(
                 self.source_path, candidate.start, candidate.end,
                 self.probe.width, self.probe.height,
+                on_progress=self._progress_cb(f"🧭 Клип {i}/{total}, ищу лицо:"),
             )
             result = render_clip(
                 self.source_path, candidate, self.transcript, crop,
