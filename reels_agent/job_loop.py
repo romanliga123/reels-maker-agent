@@ -4,9 +4,16 @@
 daemon-потоке, прогресс и результаты передаются наружу через callback
 on_event(text, kind), который web/server.py подключает к WebSocket-очереди.
 """
+import ctypes
+import gc
 import threading
 import traceback
 from pathlib import Path
+
+try:
+    import resource  # недоступен на Windows — там просто не будем логировать RSS
+except ImportError:
+    resource = None
 
 from . import config
 from .models import ClipCandidate, TranscriptSegment, RenderResult
@@ -18,6 +25,28 @@ from .pipeline.hook_analysis import analyze_hooks, HookAnalysisError
 from .pipeline.candidates import build_candidates, make_manual_candidate
 from .pipeline.face_track import compute_crop_plan
 from .pipeline.render import render_clip, extract_clip_segment, RenderError
+
+
+def _log_mem(label: str):
+    """Печатает пиковый RSS процесса в лог Render — единственный способ узнать,
+    ГДЕ накопилась память к моменту OOM-килла (сам килл ничего не успевает
+    залогировать на уровне Python, процесс убивает ядро)."""
+    if resource is None:
+        return
+    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"[mem] {label}: peak RSS {rss_mb:.1f} MB", flush=True)
+
+
+def _release_memory():
+    """gc.collect() + malloc_trim(0) — CPython/glibc часто не отдают свободную
+    память обратно ОС даже после удаления объектов (особенно после numpy/audio
+    буферов), а Render считает именно RSS всего контейнера, не "логическую"
+    память Python. Безопасная попытка вернуть это перед следующей тяжёлой стадией."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 class JobLoop:
@@ -80,6 +109,7 @@ class JobLoop:
         self._spawn(self._run_analysis_pipeline)
 
     def _run_analysis_pipeline(self):
+        _log_mem("analysis: старт")
         self._emit("🔍 Проверяю видео…", "progress")
         try:
             self.probe = probe_video(self.source_path)
@@ -116,6 +146,7 @@ class JobLoop:
             self.error = str(e)
             self._emit(f"❌ {e}", "error")
             return
+        _log_mem("analysis: после extract_audio")
 
         self._emit("📝 Распознаю речь…", "progress")
         try:
@@ -129,12 +160,14 @@ class JobLoop:
             self._emit(f"❌ {e}", "error")
             return
         self._emit(f"✅ Распознано {len(self.transcript)} фрагментов речи", "progress")
+        _log_mem("analysis: после transcribe")
 
         self._emit("😂 Ищу пики смеха и эмоций по аудио…", "progress")
         self.energy_spans = detect_energy_spans(
             wav_path, on_progress=self._progress_cb("😂 Ищу пики смеха и эмоций…"),
         )
         self._emit(f"✅ Найдено {len(self.energy_spans)} эмоциональных всплесков", "progress")
+        _log_mem("analysis: после detect_energy_spans")
 
         self._emit("🧠 Анализирую транскрипт на хуки, шутки и тезисы…", "progress")
         try:
@@ -151,6 +184,7 @@ class JobLoop:
 
         self.status = "ready_for_review"
         self._emit(f"✅ Анализ завершён, {len(self.candidates)} кандидатов на клипы", "ready")
+        _log_mem("analysis: финал")
 
     def add_manual_candidate(self, start: float, end: float):
         candidate = make_manual_candidate(start, end, self.transcript)
@@ -179,6 +213,10 @@ class JobLoop:
         total = len(approved)
         cancelled = False
 
+        _log_mem("render: старт (до release)")
+        _release_memory()
+        _log_mem("render: старт (после release)")
+
         for i, candidate in enumerate(approved, start=1):
             if self._cancel_render.is_set():
                 cancelled = True
@@ -192,19 +230,23 @@ class JobLoop:
                 # Сначала вырезаем маленький локальный кусок вокруг клипа — дальше
                 # поиск лица и финальный рендер работают с ним, а не качают/сикают
                 # по сети весь многогигабайтный источник (была причина OOM на рендере).
+                _log_mem(f"клип {i}: до extract_clip_segment")
                 seg_start = extract_clip_segment(self.source_path, candidate.start, candidate.end, segment_path)
+                _log_mem(f"клип {i}: после extract_clip_segment")
 
                 crop = compute_crop_plan(
                     segment_path, candidate.start - seg_start, candidate.end - seg_start,
                     self.probe.width, self.probe.height,
                     on_progress=self._progress_cb(f"🧭 Клип {i}/{total}, ищу лицо:"),
                 )
+                _log_mem(f"клип {i}: после compute_crop_plan")
                 result = render_clip(
                     segment_path, candidate, self.transcript, crop,
                     work_dir, out_dir / f"{candidate.id}.mp4",
                     on_progress=self._progress_cb(f"🎬 Клип {i}/{total}:"),
                     cut_start=candidate.start - seg_start,
                 )
+                _log_mem(f"клип {i}: после render_clip")
             except RenderError as e:
                 result = RenderResult(clip_id=candidate.id, output_path="", duration=0.0, error=str(e))
             finally:
