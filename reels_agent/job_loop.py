@@ -17,7 +17,7 @@ from .pipeline.audio_energy import detect_energy_spans, EnergySpan
 from .pipeline.hook_analysis import analyze_hooks, HookAnalysisError
 from .pipeline.candidates import build_candidates, make_manual_candidate
 from .pipeline.face_track import compute_crop_plan
-from .pipeline.render import render_clip
+from .pipeline.render import render_clip, extract_clip_segment, RenderError
 
 
 class JobLoop:
@@ -186,16 +186,30 @@ class JobLoop:
 
             done_pct = round((i - 1) / total * 100)
             self._emit(f"🎬 Рендерю клип {i}/{total} ({done_pct}%)…", "progress")
-            crop = compute_crop_plan(
-                self.source_path, candidate.start, candidate.end,
-                self.probe.width, self.probe.height,
-                on_progress=self._progress_cb(f"🧭 Клип {i}/{total}, ищу лицо:"),
-            )
-            result = render_clip(
-                self.source_path, candidate, self.transcript, crop,
-                work_dir, out_dir / f"{candidate.id}.mp4",
-                on_progress=self._progress_cb(f"🎬 Клип {i}/{total}:"),
-            )
+
+            segment_path = work_dir / f"{candidate.id}_segment.mp4"
+            try:
+                # Сначала вырезаем маленький локальный кусок вокруг клипа — дальше
+                # поиск лица и финальный рендер работают с ним, а не качают/сикают
+                # по сети весь многогигабайтный источник (была причина OOM на рендере).
+                seg_start = extract_clip_segment(self.source_path, candidate.start, candidate.end, segment_path)
+
+                crop = compute_crop_plan(
+                    segment_path, candidate.start - seg_start, candidate.end - seg_start,
+                    self.probe.width, self.probe.height,
+                    on_progress=self._progress_cb(f"🧭 Клип {i}/{total}, ищу лицо:"),
+                )
+                result = render_clip(
+                    segment_path, candidate, self.transcript, crop,
+                    work_dir, out_dir / f"{candidate.id}.mp4",
+                    on_progress=self._progress_cb(f"🎬 Клип {i}/{total}:"),
+                    cut_start=candidate.start - seg_start,
+                )
+            except RenderError as e:
+                result = RenderResult(clip_id=candidate.id, output_path="", duration=0.0, error=str(e))
+            finally:
+                segment_path.unlink(missing_ok=True)
+
             self.render_results[candidate.id] = result
             if result.error:
                 self._emit(f"❌ Клип {i}/{total} не отрендерился: {result.error[:200]}", "error")

@@ -18,6 +18,41 @@ class RenderError(Exception):
     pass
 
 
+def extract_clip_segment(
+    source_path: str | Path,
+    start: float,
+    end: float,
+    out_path: Path,
+    pad_sec: float = 10.0,
+) -> float:
+    """Стрим-копия (без перекодирования) широкого диапазона вокруг клипа в локальный
+    файл. Дальше поиск лица и финальный рендер этого клипа работают с этим маленьким
+    локальным файлом вместо presigned URL на весь многогигабайтный источник — это
+    убирает сетевые seek'и и непредсказуемую буферизацию у OpenCV/ffmpeg при чтении
+    удалённого потока, которые были источником OOM на рендере.
+
+    pad_sec — запас с каждой стороны, т.к. `-c copy` режет только по ключевым кадрам
+    (snap к предыдущему keyframe), а не точно по запрошенному start. `-avoid_negative_ts
+    make_zero` гарантирует, что первый кадр в out_path лежит ровно на локальном времени 0
+    — поэтому возвращаем seg_start (абсолютное время начала сегмента в таймлайне источника),
+    чтобы вызывающий код мог пересчитать candidate.start/end в локальные координаты
+    (local = absolute - seg_start) для compute_crop_plan/render_clip.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    seg_start = max(0.0, start - pad_sec)
+    seg_duration = (end - start) + 2 * pad_sec
+    cmd = [
+        config.FFMPEG_BIN, "-y",
+        "-ss", str(seg_start), "-i", str(source_path), "-t", str(seg_duration),
+        "-c", "copy", "-avoid_negative_ts", "make_zero",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        raise RenderError(f"Не удалось вырезать сегмент клипа: {proc.stderr.strip()[-300:]}")
+    return seg_start
+
+
 def _escape_filter_path(path: Path) -> str:
     # У ass-фильтра два слоя парсинга: внешний filtergraph-парсер (делит по ':' между
     # фильтрами/опциями) и внутренний парсер самого ass (делит filename:opt=val).
@@ -38,9 +73,17 @@ def render_clip(
     work_dir: Path,
     output_path: Path,
     on_progress: Callable[[float], None] | None = None,
+    cut_start: float | None = None,
 ) -> RenderResult:
+    """cut_start — позиция seek'а в source_path, если он отличается от
+    candidate.start (например, source_path — локальный сегмент, вырезанный
+    extract_clip_segment, со своей таймлинией). Субтитры всё равно строятся по
+    абсолютным candidate.start/end — они привязаны к таймкодам транскрипта,
+    а не к конкретному видеофайлу."""
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if cut_start is None:
+        cut_start = candidate.start
 
     ass_content = build_ass(transcript, candidate.start, candidate.end, candidate.subtitle_style)
     ass_path = work_dir / f"{candidate.id}.ass"
@@ -55,7 +98,7 @@ def render_clip(
 
     cmd = [
         config.FFMPEG_BIN, "-y",
-        "-ss", str(candidate.start), "-i", str(source_path), "-t", str(duration),
+        "-ss", str(cut_start), "-i", str(source_path), "-t", str(duration),
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-b:a", "128k",

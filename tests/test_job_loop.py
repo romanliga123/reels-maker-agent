@@ -173,6 +173,7 @@ class TestRunRenderPipeline:
     def test_happy_path_all_succeed(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+        monkeypatch.setattr("reels_agent.job_loop.extract_clip_segment", lambda src, start, end, out, **kw: 0.0)
         monkeypatch.setattr(
             "reels_agent.job_loop.render_clip",
             lambda src, candidate, transcript, crop, work_dir, out_path, **kw: RenderResult(
@@ -199,6 +200,7 @@ class TestRunRenderPipeline:
     def test_partial_failure_still_finishes_as_done(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+        monkeypatch.setattr("reels_agent.job_loop.extract_clip_segment", lambda src, start, end, out, **kw: 0.0)
 
         def fake_render_clip(src, candidate, transcript, crop, work_dir, out_path, **kw):
             if candidate.id == "bad":
@@ -227,6 +229,7 @@ class TestRunRenderPipeline:
     def test_cancel_before_loop_stops_immediately(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+        monkeypatch.setattr("reels_agent.job_loop.extract_clip_segment", lambda src, start, end, out, **kw: 0.0)
         calls = []
         monkeypatch.setattr(
             "reels_agent.job_loop.render_clip",
@@ -251,6 +254,7 @@ class TestRunRenderPipeline:
     def test_cancel_between_clips_keeps_already_rendered(self, monkeypatch, fake_transcript):
         monkeypatch.setattr("reels_agent.job_loop.compute_crop_plan",
                             lambda *a, **kw: CropPlan(x=0, y=0, width=405, height=720))
+        monkeypatch.setattr("reels_agent.job_loop.extract_clip_segment", lambda src, start, end, out, **kw: 0.0)
 
         events = []
         job = make_job(events)
