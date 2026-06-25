@@ -211,7 +211,7 @@ function putPartWithProgress(url, blob, onProgress) {
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.getResponseHeader("ETag"));
-      else reject(new Error(`HTTP ${xhr.status}`));
+      else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText.slice(0, 300)}`));
     };
     xhr.onerror = () => reject(new Error("ошибка сети"));
     xhr.send(blob);
@@ -234,7 +234,7 @@ function putFileWithProgress(url, file, contentType) {
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`HTTP ${xhr.status}`));
+      else reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText.slice(0, 300)}`));
     };
     xhr.onerror = () => reject(new Error("ошибка сети"));
     xhr.send(file);
