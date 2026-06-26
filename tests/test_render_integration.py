@@ -115,6 +115,7 @@ def test_render_clip_ignores_na_progress_lines(monkeypatch, fake_transcript, tmp
 
     class FakeProc:
         returncode = 0
+        pid = 999999
         stdout = iter(["out_time_ms=N/A\n", "out_time_ms=2000000\n", "progress=end\n"])
 
         def wait(self, timeout=None):

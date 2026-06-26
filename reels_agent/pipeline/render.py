@@ -5,6 +5,7 @@
 нужно перекодировать всё видео от начала ради точной нарезки длинного файла.
 """
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +17,29 @@ from .subtitles import build_ass
 
 class RenderError(Exception):
     pass
+
+
+def _monitor_child_rss(pid: int, stop_event: threading.Event, label: str):
+    """Опрашивает /proc/<pid>/status раз в секунду и печатает RSS ffmpeg-процесса
+    в лог. Нужен потому, что kernel OOM-killer убивает контейнер целиком ДО того,
+    как наш код успевает дождаться завершения процесса (RUSAGE_CHILDREN после
+    такого килла никогда не обновляется) — это единственный способ увидеть,
+    сколько памяти съел сам ffmpeg прямо перед падением."""
+    path = f"/proc/{pid}/status"
+    peak_kb = 0
+    while not stop_event.is_set():
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = int(line.split()[1])
+                        if kb > peak_kb:
+                            peak_kb = kb
+                            print(f"[mem] {label}: ffmpeg RSS {kb / 1024:.1f} MB", flush=True)
+                        break
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            break
+        stop_event.wait(1.0)
 
 
 def extract_clip_segment(
@@ -98,9 +122,16 @@ def render_clip(
 
     cmd = [
         config.FFMPEG_BIN, "-y",
+        # -threads 1 + урезанные lookahead/ref у libx264 — на free tier (512MB)
+        # многопоточный декод/энкод множит буферы кадров на число потоков, а
+        # стандартный rc-lookahead держит в памяти десятки полных кадров для
+        # ratecontrol (1080x1920 YUV420 ≈ 3MB/кадр × ~40 кадров по умолчанию —
+        # это самостоятельно может перевешивать весь оставшийся бюджет памяти).
+        "-threads", "1",
         "-ss", str(cut_start), "-i", str(source_path), "-t", str(duration),
         "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads", "1", "-x264-params", "rc-lookahead=10:ref=1",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats",
@@ -111,6 +142,11 @@ def render_clip(
     # а мы в этот момент блокируемся на чтении stdout: классический deadlock
     # subprocess. Один общий поток читаем построчно без риска зависания.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    stop_monitor = threading.Event()
+    monitor = threading.Thread(
+        target=_monitor_child_rss, args=(proc.pid, stop_monitor, f"render_clip {candidate.id}"), daemon=True,
+    )
+    monitor.start()
     output_lines: list[str] = []
     try:
         if proc.stdout is not None:
@@ -128,6 +164,8 @@ def render_clip(
         proc.kill()
         return RenderResult(clip_id=candidate.id, output_path="", duration=0.0,
                              error="ffmpeg не успел отрендерить клип за 10 минут")
+    finally:
+        stop_monitor.set()
     if proc.returncode != 0:
         return RenderResult(clip_id=candidate.id, output_path="", duration=0.0,
                              error="".join(output_lines).strip()[-500:])
