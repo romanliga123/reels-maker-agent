@@ -27,6 +27,17 @@ const resultsSection = document.getElementById("results-section");
 const resultsList = document.getElementById("results-list");
 const downloadAllBtn = document.getElementById("download-all-btn");
 
+const previewModal = document.getElementById("preview-modal");
+const previewVideo = document.getElementById("preview-video");
+const previewRange = document.getElementById("preview-range");
+const previewMarkStartBtn = document.getElementById("preview-mark-start");
+const previewMarkEndBtn = document.getElementById("preview-mark-end");
+const previewSaveBtn = document.getElementById("preview-save-btn");
+const previewCloseBtn = document.getElementById("preview-close-btn");
+let previewCandidateId = null;
+let previewStart = 0;
+let previewEnd = 0;
+
 fileInput.addEventListener("change", () => {
   uploadBtn.disabled = !fileInput.files.length;
 });
@@ -290,8 +301,8 @@ function renderCandidateCard(c) {
       <label>Конец <input type="number" class="end-input" value="${c.end.toFixed(1)}" step="0.5"></label>
       <label><input type="radio" name="sub-${c.id}" class="sub-dynamic" ${c.subtitle_style === "dynamic" ? "checked" : ""}> Караоке</label>
       <label><input type="radio" name="sub-${c.id}" class="sub-static" ${c.subtitle_style === "static" ? "checked" : ""}> Статичные</label>
-      <span class="hint">${fmtTime(c.start)}–${fmtTime(c.end)}</span>
-      <a class="preview-link" href="/api/${sessionId}/preview#t=${c.start},${c.end}" target="_blank" rel="noopener">▶ Просмотр</a>
+      <span class="hint" data-role="time-range">${fmtTime(c.start)}–${fmtTime(c.end)}</span>
+      <button type="button" class="preview-btn secondary">▶ Просмотр</button>
     </div>
   `;
 
@@ -313,9 +324,74 @@ function renderCandidateCard(c) {
   });
   card.querySelector(".sub-dynamic").addEventListener("change", () => patch({ subtitle_style: "dynamic" }));
   card.querySelector(".sub-static").addEventListener("change", () => patch({ subtitle_style: "static" }));
+  card.querySelector(".preview-btn").addEventListener("click", () => openPreview(c));
 
   return card;
 }
+
+function openPreview(candidate) {
+  previewCandidateId = candidate.id;
+  previewStart = candidate.start;
+  previewEnd = candidate.end;
+  if (previewVideo.dataset.sessionId !== sessionId) {
+    previewVideo.src = `/api/${sessionId}/preview`;
+    previewVideo.dataset.sessionId = sessionId;
+  }
+  previewVideo.onloadedmetadata = () => {
+    previewVideo.currentTime = Math.min(candidate.start, previewVideo.duration || candidate.start);
+  };
+  updatePreviewRangeDisplay();
+  previewModal.classList.remove("hidden");
+  if (previewVideo.readyState >= 1) previewVideo.currentTime = candidate.start;
+}
+
+function updatePreviewRangeDisplay() {
+  previewRange.textContent = `Начало: ${fmtTime(previewStart)} — Конец: ${fmtTime(previewEnd)}`;
+}
+
+function closePreview() {
+  previewModal.classList.add("hidden");
+  previewVideo.pause();
+}
+
+previewModal.querySelectorAll("[data-seek]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const delta = parseFloat(btn.dataset.seek);
+    const duration = previewVideo.duration || Infinity;
+    previewVideo.currentTime = Math.max(0, Math.min(previewVideo.currentTime + delta, duration));
+  });
+});
+
+previewMarkStartBtn.addEventListener("click", () => {
+  previewStart = previewVideo.currentTime;
+  updatePreviewRangeDisplay();
+});
+
+previewMarkEndBtn.addEventListener("click", () => {
+  previewEnd = previewVideo.currentTime;
+  updatePreviewRangeDisplay();
+});
+
+previewSaveBtn.addEventListener("click", async () => {
+  if (previewEnd <= previewStart) {
+    appendProgress("❌ Конец должен быть позже начала", "error");
+    return;
+  }
+  await fetch(`/api/${sessionId}/candidates/${previewCandidateId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ start: previewStart, end: previewEnd }),
+  });
+  const card = candidatesList.querySelector(`[data-id="${previewCandidateId}"]`);
+  if (card) {
+    card.querySelector(".start-input").value = previewStart.toFixed(1);
+    card.querySelector(".end-input").value = previewEnd.toFixed(1);
+    card.querySelector('[data-role="time-range"]').textContent = `${fmtTime(previewStart)}–${fmtTime(previewEnd)}`;
+  }
+  closePreview();
+});
+
+previewCloseBtn.addEventListener("click", closePreview);
 
 manualAddBtn.addEventListener("click", async () => {
   const start = parseFloat(manualStart.value);
