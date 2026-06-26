@@ -122,6 +122,10 @@ button.secondary:not(:disabled):hover { background: #3d3a6e; }
   z-index: 100;
   padding: 16px;
 }
+/* .hidden объявлен раньше .modal в файле — при равном приоритете класса
+   побеждает то, что ниже по каскаду, поэтому .modal сам по себе перебивал
+   .hidden. Точечный override с двумя классами выше по специфичности. */
+.modal.hidden { display: none; }
 .modal-box {
   background: #13131f;
   border: 1px solid #2d2b55;
