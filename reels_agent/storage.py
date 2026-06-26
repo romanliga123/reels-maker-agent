@@ -3,7 +3,7 @@
 
 Браузер льёт файл напрямую в хранилище, минуя Render-прокси (у free-тира есть
 лимиты на размер/длительность запроса — большой файл через сам Render не
-проходит). Дальше ffmpeg/ffprobe/cv2 читают видео прямо по presigned GET URL
+проходит). Дальше ffmpeg/ffprobe читают видео прямо по presigned GET URL
 через HTTP Range-запросы — сервер никогда не скачивает файл на диск целиком,
 только то, что нужно конкретной стадии пайплайна (проверено вручную:
 ffprobe/ffmpeg -ss делают точечные range-запросы, а не тянут файл с начала
@@ -51,7 +51,7 @@ def presigned_put_url(key: str, expires_in: int = 3600, content_type: str | None
 
 
 def presigned_get_url(key: str, expires_in: int) -> str:
-    """URL, по которому ffmpeg/ffprobe/cv2 читают видео через Range-запросы."""
+    """URL, по которому ffmpeg/ffprobe читают видео через Range-запросы."""
     try:
         return _client().generate_presigned_url(
             "get_object",

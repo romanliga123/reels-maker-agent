@@ -37,6 +37,15 @@ def _log_mem(label: str):
     print(f"[mem] {label}: peak RSS {rss_mb:.1f} MB", flush=True)
 
 
+def _children_rss_mb() -> float:
+    """Пиковый RSS завершившихся дочерних процессов (ffmpeg) — RUSAGE_SELF не видит
+    их память вообще, а именно в дочерних ffmpeg-процессах рендера могла быть
+    настоящая причина OOM, который ловился уже ПОСЛЕ успешного compute_crop_plan."""
+    if resource is None:
+        return 0.0
+    return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+
+
 def _release_memory():
     """gc.collect() + malloc_trim(0) — CPython/glibc часто не отдают свободную
     память обратно ОС даже после удаления объектов (особенно после numpy/audio
@@ -102,7 +111,7 @@ class JobLoop:
         """Запускает стадии 2–7 (probe → транскрипция → анализ → кандидаты) в фоне.
 
         source_path — локальный путь (старый flow) либо presigned GET URL на R2
-        (новый flow для больших файлов — ffmpeg/ffprobe/cv2 сикают по HTTP Range).
+        (новый flow для больших файлов — ffmpeg/ffprobe сикают по HTTP Range).
         """
         self.source_path = source_path
         self.status = "analyzing"
@@ -228,25 +237,20 @@ class JobLoop:
             segment_path = work_dir / f"{candidate.id}_segment.mp4"
             try:
                 # Сначала вырезаем маленький локальный кусок вокруг клипа — дальше
-                # поиск лица и финальный рендер работают с ним, а не качают/сикают
-                # по сети весь многогигабайтный источник (была причина OOM на рендере).
+                # финальный рендер работает с ним, а не качает/сикает по сети весь
+                # многогигабайтный источник (была причина OOM на рендере).
                 _log_mem(f"клип {i}: до extract_clip_segment")
                 seg_start = extract_clip_segment(self.source_path, candidate.start, candidate.end, segment_path)
-                _log_mem(f"клип {i}: после extract_clip_segment")
+                _log_mem(f"клип {i}: после extract_clip_segment (ffmpeg-дети: {_children_rss_mb():.1f} MB)")
 
-                crop = compute_crop_plan(
-                    segment_path, candidate.start - seg_start, candidate.end - seg_start,
-                    self.probe.width, self.probe.height,
-                    on_progress=self._progress_cb(f"🧭 Клип {i}/{total}, ищу лицо:"),
-                )
-                _log_mem(f"клип {i}: после compute_crop_plan")
+                crop = compute_crop_plan(self.probe.width, self.probe.height)
                 result = render_clip(
                     segment_path, candidate, self.transcript, crop,
                     work_dir, out_dir / f"{candidate.id}.mp4",
                     on_progress=self._progress_cb(f"🎬 Клип {i}/{total}:"),
                     cut_start=candidate.start - seg_start,
                 )
-                _log_mem(f"клип {i}: после render_clip")
+                _log_mem(f"клип {i}: после render_clip (ffmpeg-дети: {_children_rss_mb():.1f} MB)")
             except RenderError as e:
                 result = RenderResult(clip_id=candidate.id, output_path="", duration=0.0, error=str(e))
             finally:

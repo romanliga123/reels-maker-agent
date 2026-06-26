@@ -13,7 +13,7 @@ def test_render_clip_produces_valid_vertical_mp4(synth_video, fake_transcript, t
         id="rendertest", start=0.0, end=4.0, reason="test", score=1.0,
         source="manual", subtitle_style="dynamic",
     )
-    crop = compute_crop_plan(synth_video, candidate.start, candidate.end, 1280, 720)
+    crop = compute_crop_plan(1280, 720)
     output_path = tmp_path / "out.mp4"
 
     result = render_clip(synth_video, candidate, fake_transcript, crop, tmp_path, output_path)
@@ -36,7 +36,7 @@ def test_render_clip_with_static_subtitles(synth_video, fake_transcript, tmp_pat
         id="rendertest2", start=0.0, end=4.0, reason="test", score=1.0,
         source="manual", subtitle_style="static",
     )
-    crop = compute_crop_plan(synth_video, candidate.start, candidate.end, 1280, 720)
+    crop = compute_crop_plan(1280, 720)
     output_path = tmp_path / "out_static.mp4"
 
     result = render_clip(synth_video, candidate, fake_transcript, crop, tmp_path, output_path)
@@ -48,7 +48,7 @@ def test_render_clip_writes_ass_file_to_work_dir(synth_video, fake_transcript, t
     candidate = ClipCandidate(
         id="abc123", start=0.0, end=4.0, reason="t", score=1.0, source="manual",
     )
-    crop = compute_crop_plan(synth_video, candidate.start, candidate.end, 1280, 720)
+    crop = compute_crop_plan(1280, 720)
     render_clip(synth_video, candidate, fake_transcript, crop, tmp_path, tmp_path / "out.mp4")
     assert (tmp_path / "abc123.ass").exists()
 
@@ -87,8 +87,7 @@ def test_extract_clip_segment_then_render_uses_correct_local_offset(
     assert seg_start == pytest.approx(10.0)
 
     local_start = candidate.start - seg_start
-    local_end = candidate.end - seg_start
-    crop = compute_crop_plan(segment_path, local_start, local_end, 1280, 720)
+    crop = compute_crop_plan(1280, 720)
 
     output_path = tmp_path / "out_segment.mp4"
     result = render_clip(

@@ -3,5 +3,4 @@ uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 groq>=1.1.2
 numpy>=1.26
-opencv-python-headless>=4.9
 boto3>=1.34

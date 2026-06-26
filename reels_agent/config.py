@@ -31,7 +31,7 @@ OUTPUT_HEIGHT = 1920
 SESSION_TTL_SEC = 4 * 3600  # сессии и их файлы старше этого удаляются
 
 # Прямая загрузка в S3-совместимое хранилище (по умолчанию Yandex Object Storage) —
-# обходит лимиты Render-прокси на размер/длительность запроса. ffmpeg/ffprobe/cv2
+# обходит лимиты Render-прокси на размер/длительность запроса. ffmpeg/ffprobe
 # читают видео прямо по presigned GET URL через HTTP Range-запросы, без скачивания
 # файла на диск целиком.
 S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "https://storage.yandexcloud.net")
