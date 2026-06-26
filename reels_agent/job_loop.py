@@ -21,7 +21,9 @@ from .pipeline.probe import probe_video, ProbeError, ProbeResult
 from .pipeline.audio_extract import extract_audio, AudioExtractError
 from .pipeline.transcribe import transcribe_long_audio, TranscribeError
 from .pipeline.audio_energy import detect_energy_spans, EnergySpan
-from .pipeline.hook_analysis import analyze_hooks, refine_laughter_spans, HookAnalysisError
+from .pipeline.hook_analysis import (
+    analyze_hooks, refine_laughter_spans, refine_joke_text_boundaries, HookAnalysisError,
+)
 from .pipeline.candidates import build_candidates, make_manual_candidate
 from .pipeline.face_track import compute_crop_plan
 from .pipeline.render import render_clip, extract_clip_segment, RenderError
@@ -200,6 +202,20 @@ class JobLoop:
             self.error = str(e)
             self._emit(f"❌ {e}", "error")
             return
+
+        joke_hooks = [h for h in hook_spans if h.kind == "joke"]
+        other_hooks = [h for h in hook_spans if h.kind != "joke"]
+        if joke_hooks:
+            self._emit("🎯 Уточняю границы найденных шуток по смыслу…", "progress")
+            try:
+                joke_hooks = refine_joke_text_boundaries(
+                    joke_hooks, self.transcript,
+                    on_progress=self._progress_cb("🎯 Уточняю границы шуток…"),
+                )
+            except HookAnalysisError as e:
+                # Не критично — оставляем грубые границы с первого прохода как были.
+                self._emit(f"⚠️ Не уточнил границы шуток ({e}), оставляю как было", "progress")
+        hook_spans = other_hooks + joke_hooks
 
         self.candidates = build_candidates(
             self.transcript, self.energy_spans, hook_spans, refined_joke_spans=refined_joke_spans,

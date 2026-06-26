@@ -41,10 +41,17 @@ GROQ_FALLBACK_MODELS = [
 
 SYSTEM_PROMPT = (
     "Ты — опытный редактор коротких видео (Reels/TikTok/Shorts) с 5-летним стажем. "
-    "Тебе дают фрагмент транскрипта подкаста/стрима с таймкодами в секундах. "
+    "Тебе дают фрагмент транскрипта подкаста/стрима/стендапа с таймкодами в секундах. "
     "Найди моменты, которые стоит вырезать в отдельный клип: "
-    "hook — цепляющая фраза или неожиданный поворот, joke — шутка/смешной момент, "
+    "hook — цепляющая фраза или неожиданный поворот, "
+    "joke — шутка/смешная история (структура: сетап → развитие → кульминация/панчлайн, "
+    "иногда + короткая добивка сразу после), "
     "thesis — самостоятельная законченная мысль или ценный вывод. "
+    "Для joke: start ОБЯЗАТЕЛЬНО ставь на начало СЕТАПА — там, где комик начинает заводить "
+    "тему/историю (часто это фраза-переход типа «короче», «вот недавно», смена темы), а НЕ "
+    "на середину истории и не на саму кульминацию: без сетапа шутка не считывается зрителем "
+    "клипа в отрыве от контекста. end ставь сразу после кульминации (+ максимум одна "
+    "добивочная фраза) — не включай переход комика к следующей теме. "
     "Каждый момент должен быть смысловым отрывком длиной от 15 до 90 секунд. "
     "Используй ТОЛЬКО таймкоды, присутствующие в исходном тексте — не придумывай свои. "
     "Ответь СТРОГО JSON-массивом без пояснений и без markdown, формат каждого элемента: "
@@ -124,6 +131,25 @@ LAUGHTER_BOUNDARY_SYSTEM_PROMPT = (
     '{"start": <число>, "end": <число>, "reason": "<короткое объяснение на русском>"} или null.'
 )
 
+JOKE_TEXT_BOUNDARY_SYSTEM_PROMPT = (
+    "Ты — опытный редактор и сценарист стендап-шоу. Тебе дают фрагмент транскрипта "
+    "выступления комика с таймкодами в секундах. В этом отрывке уже отмечена ПРИМЕРНАЯ "
+    "область одной шутки/истории — но её границы могут быть неточными, и твоя задача "
+    "пересмотреть их внимательнее, с более широким контекстом перед глазами. "
+    "Структура шутки: (1) СЕТАП — комик задаёт тему/ситуацию (часто начинается заметно "
+    "раньше отмеченной области, с фразы-перехода типа «короче», «вот недавно», «кстати» "
+    "или со смены темы); (2) РАЗВИТИЕ — нагнетание/детали; (3) КУЛЬМИНАЦИЯ (панчлайн) — "
+    "неожиданный поворот/смешная развязка; иногда (4) ДОБИВКА — короткая фраза сразу после. "
+    "Найди ТОЧНЫЕ границы: start — первая фраза СЕТАПА (не середина истории и не сама "
+    "кульминация — без сетапа шутка не считывается зрителем клипа в отрыве от контекста), "
+    "end — конец кульминации + максимум одна добивочная фраза (НЕ включай переход комика "
+    "к следующей теме). "
+    "Используй ТОЛЬКО таймкоды, присутствующие в исходном тексте — не придумывай свои. "
+    "Если в этом отрывке нет одной целостной шутки/истории — верни null. "
+    "Ответь СТРОГО одним JSON-объектом без пояснений и без markdown: "
+    '{"start": <число>, "end": <число>, "reason": "<короткое объяснение на русском>"} или null.'
+)
+
 
 def _extract_json_object(text: str) -> dict | None:
     text = text.strip()
@@ -142,14 +168,14 @@ def _extract_json_object(text: str) -> dict | None:
     return None
 
 
-def _call_groq_object(client: Groq, prompt: str) -> dict | None:
+def _call_groq_object(client: Groq, system_prompt: str, prompt: str) -> dict | None:
     last_error = None
     for model in GROQ_FALLBACK_MODELS:
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": LAUGHTER_BOUNDARY_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=300,
@@ -163,6 +189,42 @@ def _call_groq_object(client: Groq, prompt: str) -> dict | None:
                 continue
             raise HookAnalysisError(f"Groq API Error: {e}")
     raise HookAnalysisError(f"Groq: все модели недоступны. {last_error}")
+
+
+def _refine_one_span(
+    client: Groq,
+    transcript: list[TranscriptSegment],
+    system_prompt: str,
+    prompt_intro: str,
+    rough_start: float,
+    rough_end: float,
+    lookback_sec: float,
+    lookahead_sec: float,
+    min_duration_sec: float = 3.0,
+) -> HookSpan | None:
+    """Общая механика для обоих уточняющих проходов (по смеху и по уже найденной шутке):
+    берём транскрипт в более широком окне вокруг грубой оценки, просим LLM пересмотреть
+    границы внимательнее, парсим результат с тем же клампингом/валидацией."""
+    window = [
+        seg for seg in transcript
+        if seg.end > rough_start - lookback_sec and seg.start < rough_end + lookahead_sec
+    ]
+    if not window:
+        return None
+    window_text = _format_window(window)
+    prompt = f"{prompt_intro}\nТранскрипт вокруг этого момента:\n{window_text}"
+    item = _call_groq_object(client, system_prompt, prompt)
+    if not item:
+        return None
+    try:
+        start = max(float(item["start"]), window[0].start)
+        end = min(float(item["end"]), window[-1].end)
+        reason = str(item.get("reason", "")).strip()
+    except (KeyError, TypeError, ValueError):
+        return None
+    if end - start < min_duration_sec:
+        return None
+    return HookSpan(start=start, end=end, reason=reason, kind="joke")
 
 
 def refine_laughter_spans(
@@ -187,31 +249,44 @@ def refine_laughter_spans(
     results: list[HookSpan | None] = []
     total = len(energy_spans)
     for i, span in enumerate(energy_spans):
-        window = [
-            seg for seg in transcript
-            if seg.end > span.start - lookback_sec and seg.start < span.end + lookahead_sec
-        ]
-        item = None
-        if window:
-            window_text = _format_window(window)
-            prompt = (
-                f"Всплеск реакции (смех/аплодисменты) примерно на {span.start:.1f}–{span.end:.1f} сек.\n"
-                f"Транскрипт вокруг этого момента:\n{window_text}"
-            )
-            item = _call_groq_object(client, prompt)
-
-        refined = None
-        if item:
-            try:
-                start = max(float(item["start"]), window[0].start)
-                end = min(float(item["end"]), window[-1].end)
-                reason = str(item.get("reason", "")).strip()
-                if end - start >= 3:
-                    refined = HookSpan(start=start, end=end, reason=reason, kind="joke")
-            except (KeyError, TypeError, ValueError):
-                refined = None
+        refined = _refine_one_span(
+            client, transcript, LAUGHTER_BOUNDARY_SYSTEM_PROMPT,
+            f"Всплеск реакции (смех/аплодисменты) примерно на {span.start:.1f}–{span.end:.1f} сек.",
+            span.start, span.end, lookback_sec, lookahead_sec,
+        )
         results.append(refined)
+        if on_progress:
+            on_progress((i + 1) / total)
 
+    return results
+
+
+def refine_joke_text_boundaries(
+    joke_hooks: list[HookSpan],
+    transcript: list[TranscriptSegment],
+    lookback_sec: float = 30.0,
+    lookahead_sec: float = 10.0,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[HookSpan]:
+    """Второй, более внимательный проход именно по уже найденным analyze_hooks шуткам
+    (kind="joke"). Первый проход смотрит сразу 240-секундное окно и легко промахивается
+    мимо точного начала/конца — здесь модель видит ту же шутку с более широким контекстом
+    вокруг и осознанно ищет именно структуру сетап→кульминация (см. JOKE_TEXT_BOUNDARY_
+    SYSTEM_PROMPT). Если уточнить не вышло — оставляем исходные границы как были."""
+    if not config.GROQ_API_KEY or not joke_hooks:
+        return list(joke_hooks)
+
+    client = Groq(api_key=config.GROQ_API_KEY, timeout=60.0)
+    results: list[HookSpan] = []
+    total = len(joke_hooks)
+    for i, hook in enumerate(joke_hooks):
+        refined = _refine_one_span(
+            client, transcript, JOKE_TEXT_BOUNDARY_SYSTEM_PROMPT,
+            f"Примерная область шутки сейчас оценена как {hook.start:.1f}–{hook.end:.1f} сек "
+            f"(\"{hook.reason}\"). Пересмотри её точные границы.",
+            hook.start, hook.end, lookback_sec, lookahead_sec,
+        )
+        results.append(refined if refined is not None else hook)
         if on_progress:
             on_progress((i + 1) / total)
 
