@@ -60,6 +60,22 @@ class TestBuildCandidatesMerging:
     def test_empty_inputs_produce_no_candidates(self, fake_transcript):
         assert build_candidates(fake_transcript, [], []) == []
 
+    def test_refined_joke_span_used_instead_of_symmetric_padding(self, fake_transcript):
+        energy = [EnergySpan(start=8.5, end=9.0, score=2.0)]
+        refined = [HookSpan(start=0.0, end=8.0, reason="сетап нашёлся раньше", kind="joke")]
+        candidates = build_candidates(fake_transcript, energy, [], refined_joke_spans=refined)
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.source == "audio+llm"
+        assert "сетап нашёлся раньше" in c.reason
+        assert c.start == 0.0  # взяли границу от LLM, а не симметричный отступ от всплеска
+
+    def test_none_refined_joke_falls_back_to_symmetric_padding(self, fake_transcript):
+        energy = [EnergySpan(start=5.0, end=6.0, score=2.0)]
+        candidates = build_candidates(fake_transcript, energy, [], refined_joke_spans=[None])
+        assert len(candidates) == 1
+        assert candidates[0].source == "audio"
+
 
 class TestManualCandidate:
     def test_manual_candidate_has_max_score(self, fake_transcript):

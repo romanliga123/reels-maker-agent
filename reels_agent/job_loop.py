@@ -21,7 +21,7 @@ from .pipeline.probe import probe_video, ProbeError, ProbeResult
 from .pipeline.audio_extract import extract_audio, AudioExtractError
 from .pipeline.transcribe import transcribe_long_audio, TranscribeError
 from .pipeline.audio_energy import detect_energy_spans, EnergySpan
-from .pipeline.hook_analysis import analyze_hooks, HookAnalysisError
+from .pipeline.hook_analysis import analyze_hooks, refine_laughter_spans, HookAnalysisError
 from .pipeline.candidates import build_candidates, make_manual_candidate
 from .pipeline.face_track import compute_crop_plan
 from .pipeline.render import render_clip, extract_clip_segment, RenderError
@@ -178,6 +178,18 @@ class JobLoop:
         self._emit(f"✅ Найдено {len(self.energy_spans)} эмоциональных всплесков", "progress")
         _log_mem("analysis: после detect_energy_spans")
 
+        refined_joke_spans = []
+        if self.energy_spans:
+            self._emit("🎭 Ищу настоящие границы шуток по смеху и тексту…", "progress")
+            try:
+                refined_joke_spans = refine_laughter_spans(
+                    self.energy_spans, self.transcript,
+                    on_progress=self._progress_cb("🎭 Ищу границы шуток…"),
+                )
+            except HookAnalysisError as e:
+                # Не критично — просто останется старый симметричный отступ от всплеска.
+                self._emit(f"⚠️ Не уточнил границы шуток ({e}), беру запас по умолчанию", "progress")
+
         self._emit("🧠 Анализирую транскрипт на хуки, шутки и тезисы…", "progress")
         try:
             hook_spans = analyze_hooks(
@@ -189,7 +201,9 @@ class JobLoop:
             self._emit(f"❌ {e}", "error")
             return
 
-        self.candidates = build_candidates(self.transcript, self.energy_spans, hook_spans)
+        self.candidates = build_candidates(
+            self.transcript, self.energy_spans, hook_spans, refined_joke_spans=refined_joke_spans,
+        )
 
         self.status = "ready_for_review"
         self._emit(f"✅ Анализ завершён, {len(self.candidates)} кандидатов на клипы", "ready")

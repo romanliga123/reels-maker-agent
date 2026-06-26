@@ -17,6 +17,7 @@ from groq import Groq
 
 from .. import config
 from ..models import TranscriptSegment
+from .audio_energy import EnergySpan
 
 
 class HookAnalysisError(Exception):
@@ -108,6 +109,113 @@ def _windows(segments: list[TranscriptSegment], window_sec: float):
         window.append(seg)
     if window:
         yield window
+
+
+LAUGHTER_BOUNDARY_SYSTEM_PROMPT = (
+    "Ты — опытный редактор коротких видео (Reels/TikTok/Shorts). Тебе дают фрагмент "
+    "транскрипта подкаста/стрима с таймкодами в секундах и примерное время всплеска "
+    "смеха или аплодисментов в аудио — это РЕАКЦИЯ публики на что-то сказанное ДО этого "
+    "момента. Твоя задача — найти, ГДЕ РЕАЛЬНО начинается шутка или история, которая "
+    "привела к этой реакции (сетап может начинаться заметно раньше самого смеха), и где "
+    "она логически заканчивается (кульминация + сама реакция, без длинного хвоста после). "
+    "Используй ТОЛЬКО таймкоды, присутствующие в исходном тексте — не придумывай свои. "
+    "Если в этом отрывке нет одной ясной шутки/истории, объясняющей реакцию — верни null. "
+    "Ответь СТРОГО одним JSON-объектом без пояснений и без markdown: "
+    '{"start": <число>, "end": <число>, "reason": "<короткое объяснение на русском>"} или null.'
+)
+
+
+def _extract_json_object(text: str) -> dict | None:
+    text = text.strip()
+    if text.lower().rstrip(".") == "null":
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _call_groq_object(client: Groq, prompt: str) -> dict | None:
+    last_error = None
+    for model in GROQ_FALLBACK_MODELS:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": LAUGHTER_BOUNDARY_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=300,
+                temperature=0.2,
+            )
+            return _extract_json_object(response.choices[0].message.content)
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(k in error_str for k in ("rate", "429", "503", "capacity", "model", "overloaded", "unavailable")):
+                last_error = e
+                continue
+            raise HookAnalysisError(f"Groq API Error: {e}")
+    raise HookAnalysisError(f"Groq: все модели недоступны. {last_error}")
+
+
+def refine_laughter_spans(
+    energy_spans: list[EnergySpan],
+    transcript: list[TranscriptSegment],
+    lookback_sec: float = 60.0,
+    lookahead_sec: float = 8.0,
+    on_progress: Callable[[float], None] | None = None,
+) -> list[HookSpan | None]:
+    """Для каждого всплеска смеха/аплодисментов (из audio_energy) симметричный отступ
+    от самого всплеска ничего не знает про реальный сетап шутки — он может начинаться
+    заметно раньше. Смотрим транскрипт ПЕРЕД всплеском и просим LLM найти настоящие
+    границы истории/шутки, которая к этому привела.
+
+    Возвращает список той же длины и порядка, что energy_spans: HookSpan(kind="joke")
+    с уточнёнными границами, либо None, если LLM не нашла ясной причины (вызывающий код
+    тогда падает обратно на старый симметричный отступ для этого конкретного всплеска)."""
+    if not config.GROQ_API_KEY or not energy_spans:
+        return [None] * len(energy_spans)
+
+    client = Groq(api_key=config.GROQ_API_KEY, timeout=60.0)
+    results: list[HookSpan | None] = []
+    total = len(energy_spans)
+    for i, span in enumerate(energy_spans):
+        window = [
+            seg for seg in transcript
+            if seg.end > span.start - lookback_sec and seg.start < span.end + lookahead_sec
+        ]
+        item = None
+        if window:
+            window_text = _format_window(window)
+            prompt = (
+                f"Всплеск реакции (смех/аплодисменты) примерно на {span.start:.1f}–{span.end:.1f} сек.\n"
+                f"Транскрипт вокруг этого момента:\n{window_text}"
+            )
+            item = _call_groq_object(client, prompt)
+
+        refined = None
+        if item:
+            try:
+                start = max(float(item["start"]), window[0].start)
+                end = min(float(item["end"]), window[-1].end)
+                reason = str(item.get("reason", "")).strip()
+                if end - start >= 3:
+                    refined = HookSpan(start=start, end=end, reason=reason, kind="joke")
+            except (KeyError, TypeError, ValueError):
+                refined = None
+        results.append(refined)
+
+        if on_progress:
+            on_progress((i + 1) / total)
+
+    return results
 
 
 def analyze_hooks(

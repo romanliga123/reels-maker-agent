@@ -124,7 +124,13 @@ def build_candidates(
     energy_spans: list[EnergySpan],
     hook_spans: list[HookSpan],
     manual: list[tuple[float, float]] = (),
+    refined_joke_spans: list[HookSpan | None] = (),
 ) -> list[ClipCandidate]:
+    """refined_joke_spans — по одному элементу на energy_spans (тот же порядок),
+    от hook_analysis.refine_laughter_spans: LLM смотрит транскрипт ПЕРЕД всплеском
+    смеха/аплодисментов и ищет настоящий сетап шутки/истории вместо симметричного
+    отступа от самого всплеска. None — там, где LLM не нашла ясной причины реакции,
+    для них остаётся старый отступ ENERGY_PAD_TARGET_SEC."""
     raw: list[_RawSpan] = []
 
     for h in hook_spans:
@@ -133,7 +139,14 @@ def build_candidates(
         raw.append(_RawSpan(start=h.start, end=h.end, score=KIND_SCORE.get(h.kind, 2.0),
                              reasons=[reason], sources={"llm"}))
 
-    for e in energy_spans:
+    refined = list(refined_joke_spans) if refined_joke_spans else [None] * len(energy_spans)
+    for e, joke in zip(energy_spans, refined):
+        if joke is not None:
+            label = KIND_LABELS.get("joke", "😂 Шутка")
+            reason = f"{label} (смех + сетап по тексту): {joke.reason}" if joke.reason else label
+            raw.append(_RawSpan(start=joke.start, end=joke.end, score=KIND_SCORE.get("joke", 2.5) + e.score,
+                                 reasons=[reason], sources={"audio", "llm"}))
+            continue
         center = (e.start + e.end) / 2
         half = max((e.end - e.start) / 2, ENERGY_PAD_TARGET_SEC / 2)
         raw.append(_RawSpan(start=max(center - half, 0.0), end=center + half, score=e.score,

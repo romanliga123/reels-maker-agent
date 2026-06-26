@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
 
 from reels_agent.pipeline.hook_analysis import (
-    _extract_json_array, _windows, analyze_hooks, HookAnalysisError,
+    _extract_json_array, _extract_json_object, _windows, analyze_hooks, refine_laughter_spans,
+    HookAnalysisError,
 )
+from reels_agent.pipeline.audio_energy import EnergySpan
 from reels_agent.models import TranscriptSegment
 
 
@@ -100,3 +102,91 @@ class TestAnalyzeHooks:
 
         assert fractions[-1] == 1.0
         assert all(0.0 <= f <= 1.0 for f in fractions)
+
+
+class TestExtractJsonObject:
+    def test_plain_json(self):
+        assert _extract_json_object('{"start": 1, "end": 2}') == {"start": 1, "end": 2}
+
+    def test_null_returns_none(self):
+        assert _extract_json_object("null") is None
+
+    def test_json_wrapped_in_prose(self):
+        text = 'Вот результат:\n{"start": 1, "end": 2}\nНадеюсь, помогло!'
+        assert _extract_json_object(text) == {"start": 1, "end": 2}
+
+    def test_garbage_returns_none(self):
+        assert _extract_json_object("это не json вообще") is None
+
+
+class TestRefineLaughterSpans:
+    def test_no_api_key_returns_all_none(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "")
+        energy = [EnergySpan(start=5.0, end=6.0, score=2.0)]
+        assert refine_laughter_spans(energy, fake_transcript) == [None]
+
+    def test_empty_energy_spans_returns_empty(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        assert refine_laughter_spans([], fake_transcript) == []
+
+    def test_llm_finds_joke_boundaries(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        monkeypatch.setattr(
+            "reels_agent.pipeline.hook_analysis._call_groq_object",
+            lambda client, prompt: {"start": 0.0, "end": 8.0, "reason": "сетап про второй сегмент"},
+        )
+        energy = [EnergySpan(start=8.5, end=9.0, score=2.0)]
+        results = refine_laughter_spans(energy, fake_transcript)
+        assert len(results) == 1
+        assert results[0] is not None
+        assert results[0].kind == "joke"
+        assert results[0].start == 0.0
+        assert results[0].end == 8.0
+
+    def test_llm_returns_null_keeps_none(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        monkeypatch.setattr("reels_agent.pipeline.hook_analysis._call_groq_object", lambda client, prompt: None)
+        energy = [EnergySpan(start=8.5, end=9.0, score=2.0)]
+        assert refine_laughter_spans(energy, fake_transcript) == [None]
+
+    def test_too_short_result_dropped(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        monkeypatch.setattr(
+            "reels_agent.pipeline.hook_analysis._call_groq_object",
+            lambda client, prompt: {"start": 8.0, "end": 8.5, "reason": "слишком коротко"},
+        )
+        energy = [EnergySpan(start=8.5, end=9.0, score=2.0)]
+        assert refine_laughter_spans(energy, fake_transcript) == [None]
+
+    def test_preserves_order_and_length(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        calls = []
+
+        def fake_call(client, prompt):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {"start": 0.0, "end": 4.0, "reason": "первая"}
+            return None
+
+        monkeypatch.setattr("reels_agent.pipeline.hook_analysis._call_groq_object", fake_call)
+        energy = [EnergySpan(start=2.0, end=2.5, score=1.0), EnergySpan(start=9.0, end=9.5, score=1.5)]
+        results = refine_laughter_spans(energy, fake_transcript)
+        assert len(results) == 2
+        assert results[0] is not None
+        assert results[1] is None
+
+    def test_on_progress_reaches_100_percent(self, fake_transcript, monkeypatch):
+        from reels_agent import config
+        monkeypatch.setattr(config, "GROQ_API_KEY", "fake-key-for-test")
+        monkeypatch.setattr("reels_agent.pipeline.hook_analysis._call_groq_object", lambda client, prompt: None)
+        energy = [EnergySpan(start=2.0, end=2.5, score=1.0), EnergySpan(start=9.0, end=9.5, score=1.5)]
+
+        fractions = []
+        refine_laughter_spans(energy, fake_transcript, on_progress=fractions.append)
+        assert fractions[-1] == 1.0

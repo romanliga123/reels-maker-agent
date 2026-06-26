@@ -28,6 +28,7 @@ class TestRunAnalysisPipelineHappyPath:
         monkeypatch.setattr("reels_agent.job_loop.extract_audio", lambda src, dst, **kw: dst)
         monkeypatch.setattr("reels_agent.job_loop.transcribe_long_audio", lambda *a, **kw: fake_transcript)
         monkeypatch.setattr("reels_agent.job_loop.detect_energy_spans", lambda wav, **kw: [EnergySpan(5.0, 6.0, 2.0)])
+        monkeypatch.setattr("reels_agent.job_loop.refine_laughter_spans", lambda spans, transcript, **kw: [None])
         monkeypatch.setattr("reels_agent.job_loop.analyze_hooks",
                             lambda transcript, **kw: [HookSpan(0.0, 4.0, "тест", "hook")])
 
