@@ -37,7 +37,7 @@ def transcribe_wav(wav_path: Path, language: str = "ru") -> list[TranscriptSegme
     client = _client()
     with open(wav_path, "rb") as f:
         resp = client.audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
+            model="whisper-large-v3",
             file=(wav_path.name, f.read()),
             language=language,
             response_format="verbose_json",
